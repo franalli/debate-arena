@@ -46,12 +46,10 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
     return getWinner(claims)
   }, [status, claims])
 
-  const liveScore = useMemo(() => {
+  const _liveScore = useMemo(() => {
     if (!claims?.length) return null
     const score = computeWildcardScore(claims)
-    const advPts = score.advocate.agreed + score.critic.rebutted
-    const crtPts = score.critic.agreed + score.advocate.rebutted
-    return { advPts, crtPts }
+    return { advPts: score.advocate, crtPts: score.critic }
   }, [claims])
 
   // Build position map for all nodes
@@ -83,6 +81,15 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
         .attr('orient', 'auto')
         .append('path').attr('d', 'M0,0 L10,3 L0,6 Z')
         .attr('fill', AGENTS[id].color)
+      // Dimmed version for non-highlighted edges
+      defs.append('marker')
+        .attr('id', `arrow-${id}-dim`)
+        .attr('viewBox', '0 0 10 6')
+        .attr('refX', 10).attr('refY', 3)
+        .attr('markerWidth', 10).attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path').attr('d', 'M0,0 L10,3 L0,6 Z')
+        .attr('fill', AGENTS[id].color).attr('fill-opacity', 0.1)
     }
 
     // Glow filters per agent
@@ -96,9 +103,10 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       merge.append('feMergeNode').attr('in', 'SourceGraphic')
     }
 
-    // Agreement glow filter (green)
+    // Agreement glow filter (green) — use userSpaceOnUse to avoid zero-height clipping on horizontal lines
     const agreeFilter = defs.append('filter').attr('id', 'glow-agree')
-      .attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%')
+      .attr('filterUnits', 'userSpaceOnUse')
+      .attr('x', 0).attr('y', 0).attr('width', VB_W).attr('height', VB_H)
     agreeFilter.append('feGaussianBlur').attr('in', 'SourceGraphic').attr('stdDeviation', 10)
       .attr('result', 'blur')
     const agreeMerge = agreeFilter.append('feMerge')
@@ -130,21 +138,39 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       .attr('points', `${cx},${cy - ds} ${cx + ds},${cy} ${cx},${cy + ds} ${cx - ds},${cy}`)
       .attr('fill', '#ffffff').attr('fill-opacity', 0.1)
 
+    // ── Selection highlight set ──
+    // When a node is selected, only its edges and connected nodes stay bright
+    const hasSelection = !!selectedNode
+    const highlightedEdges = new Set()
+    const highlightedNodes = new Set()
+    if (hasSelection) {
+      highlightedNodes.add(selectedNode)
+      for (const l of graphData.links) {
+        if (l.source === selectedNode || l.target === selectedNode) {
+          highlightedEdges.add(l.id)
+          highlightedNodes.add(l.source)
+          highlightedNodes.add(l.target)
+        }
+      }
+    }
+
     // ── Layer 2: Rebuttal edges (curved) ──
     const rebuttalGroup = svg.append('g').attr('class', 'rebuttal-edges')
     const rebuttalLinks = graphData.links.filter(l => l.type === 'rebuttal')
 
-    // Group by target so we can spread overlapping edges
-    const rebuttalsByTarget = {}
+    // Group by source-target pair so overlapping edges between the same nodes spread apart
+    const edgesByPair = {}
     for (const l of rebuttalLinks) {
-      if (!rebuttalsByTarget[l.target]) rebuttalsByTarget[l.target] = []
-      rebuttalsByTarget[l.target].push(l)
+      const key = [l.source, l.target].sort().join('|')
+      if (!edgesByPair[key]) edgesByPair[key] = []
+      edgesByPair[key].push(l)
     }
 
     // Build a radius lookup from nodes
     const nodeRadiusMap = new Map(graphData.nodes.map(n => [n.id, n.radius]))
 
-    for (const l of rebuttalLinks) {
+    for (let i = 0; i < rebuttalLinks.length; i++) {
+      const l = rebuttalLinks[i]
       const src = posMap.get(l.source)
       const tgt = posMap.get(l.target)
       if (!src || !tgt) continue
@@ -152,20 +178,26 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       const tgtRadius = nodeRadiusMap.get(l.target) || 24
       const srcRadius = nodeRadiusMap.get(l.source) || 24
 
-      // Spread: vary bulge for multiple edges targeting the same node
-      const siblings = rebuttalsByTarget[l.target]
-      const idx = siblings.indexOf(l)
-      const count = siblings.length
-
       const mx = (src.x + tgt.x) / 2, my = (src.y + tgt.y) / 2
       const dx = tgt.x - src.x, dy = tgt.y - src.y
       const len = Math.sqrt(dx * dx + dy * dy) || 1
       const px = -dy / len, py = dx / len
+
+      // Base direction: curve toward arena centroid
       const toCenter = (CENTROID.x - mx) * px + (CENTROID.y - my) * py
       const sign = toCenter >= 0 ? 1 : -1
-      const spreadOffset = count > 1 ? (idx - (count - 1) / 2) * 30 : 0
-      const baseBulge = Math.min(len * 0.25, 60) * sign
-      const bulge = baseBulge + spreadOffset
+
+      // Spread edges sharing the same source-target pair
+      const pairKey = [l.source, l.target].sort().join('|')
+      const siblings = edgesByPair[pairKey]
+      const pairIdx = siblings.indexOf(l)
+      const pairSpread = siblings.length > 1 ? (pairIdx - (siblings.length - 1) / 2) * 40 : 0
+
+      // Small per-edge offset based on global index so unrelated edges don't perfectly overlap
+      const globalVariation = (i % 2 === 0 ? 1 : -1) * (i * 4)
+
+      const baseBulge = Math.min(len * 0.15, 50) * sign
+      const bulge = baseBulge + pairSpread + globalVariation
       const cpx = mx + px * bulge, cpy = my + py * bulge
 
       // Shorten start: pull src along start tangent by source radius
@@ -180,15 +212,18 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       const endX = tgt.x - (etx / etLen) * (tgtRadius + 6)
       const endY = tgt.y - (ety / etLen) * (tgtRadius + 6)
 
+      const edgeDimmed = hasSelection && !highlightedEdges.has(l.id)
+      const edgeOpacity = edgeDimmed ? 0.1 : 0.7
+
       rebuttalGroup.append('path')
         .attr('d', `M${startX},${startY} Q${cpx},${cpy} ${endX},${endY}`)
         .attr('fill', 'none')
         .attr('stroke', l.color)
-        .attr('stroke-width', 2.5).attr('stroke-dasharray', '8,5')
-        .attr('marker-end', `url(#arrow-${l.sourceAgentId})`)
+        .attr('stroke-width', edgeDimmed ? 1.5 : 2.5).attr('stroke-dasharray', '8,5')
+        .attr('marker-end', `url(#arrow-${l.sourceAgentId}${edgeDimmed ? '-dim' : ''})`)
         .attr('stroke-opacity', 0)
         .transition().duration(600)
-        .attr('stroke-opacity', 0.7)
+        .attr('stroke-opacity', edgeOpacity)
     }
 
     // ── Layer 3: Agreement edges (glowing) ──
@@ -199,24 +234,29 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       const tgt = posMap.get(l.target)
       if (!src || !tgt) continue
 
+      const agreeDimmed = hasSelection && !highlightedEdges.has(l.id)
+      const agreeOpacity = agreeDimmed ? 0.1 : 0.7
+
       agreeGroup.append('line')
         .attr('x1', src.x).attr('y1', src.y)
         .attr('x2', tgt.x).attr('y2', tgt.y)
-        .attr('stroke', '#22c55e').attr('stroke-width', 4)
-        .attr('filter', 'url(#glow-agree)')
+        .attr('stroke', '#22c55e').attr('stroke-width', agreeDimmed ? 2 : 4)
+        .attr('filter', agreeDimmed ? null : 'url(#glow-agree)')
         .attr('stroke-opacity', 0)
         .transition().duration(400)
-        .attr('stroke-opacity', 0.7)
+        .attr('stroke-opacity', agreeOpacity)
         .on('end', function () {
-          select(this).style('animation', 'agree-pulse 2s ease-in-out infinite')
+          if (!agreeDimmed) select(this).style('animation', 'agree-pulse 2s ease-in-out infinite')
         })
 
       // Small circles at both ends
-      for (const p of [src, tgt]) {
-        agreeGroup.append('circle')
-          .attr('cx', p.x).attr('cy', p.y).attr('r', 6)
-          .attr('fill', '#22c55e').attr('fill-opacity', 0.6)
-          .attr('filter', 'url(#glow-agree)')
+      if (!agreeDimmed) {
+        for (const p of [src, tgt]) {
+          agreeGroup.append('circle')
+            .attr('cx', p.x).attr('cy', p.y).attr('r', 6)
+            .attr('fill', '#22c55e').attr('fill-opacity', 0.6)
+            .attr('filter', 'url(#glow-agree)')
+        }
       }
     }
 
@@ -238,10 +278,14 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
         .datum(node)
 
       // Circle — animate radius from 0 on new nodes
+      const nodeDimmed = hasSelection && !highlightedNodes.has(node.id)
+      const nodeFillOpacity = nodeDimmed ? 0.15 : 0.85
+      const nodeStrokeOpacity = nodeDimmed ? 0.2 : 1
+
       const circle = g.append('circle')
         .attr('r', isNew ? 0 : node.radius)
-        .attr('fill', node.color).attr('fill-opacity', 0.7)
-        .attr('stroke', node.color).attr('stroke-width', 2.5)
+        .attr('fill', node.color).attr('fill-opacity', nodeFillOpacity)
+        .attr('stroke', node.color).attr('stroke-width', 2.5).attr('stroke-opacity', nodeStrokeOpacity)
 
       if (isNew) {
         circle.transition().duration(500)
@@ -257,10 +301,20 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
           })
       }
 
-      // Round label inside
+      // Round label inside — stroke outline for contrast, then white fill on top
       g.append('text')
         .attr('text-anchor', 'middle').attr('dy', '0.35em')
-        .attr('fill', '#ffffff').attr('font-size', '14px').attr('font-weight', 700)
+        .attr('fill', 'none').attr('stroke', '#000000').attr('stroke-width', 4)
+        .attr('stroke-linejoin', 'round')
+        .attr('font-size', '16px').attr('font-weight', 800)
+        .attr('opacity', nodeDimmed ? 0.3 : 0.8)
+        .style('pointer-events', 'none')
+        .text(node.round)
+      g.append('text')
+        .attr('text-anchor', 'middle').attr('dy', '0.35em')
+        .attr('fill', '#ffffff').attr('font-size', '16px').attr('font-weight', 800)
+        .attr('opacity', nodeDimmed ? 0.3 : 1)
+        .style('pointer-events', 'none')
         .text(node.round)
 
       // Selection highlight
@@ -299,33 +353,64 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
     }
 
     // ── Layer 6: Agent anchors ──
+    // When a node is selected, find which agents are involved
+    const involvedAgents = new Set()
+    if (hasSelection) {
+      for (const nId of highlightedNodes) {
+        const n = graphData.nodes.find(nd => nd.id === nId)
+        if (n) involvedAgents.add(n.agentId)
+      }
+    }
+
     const anchorGroup = svg.append('g').attr('class', 'agent-anchors')
     for (const agentId of AGENT_ORDER) {
       const a = LAYOUT[agentId].anchor
       const agent = AGENTS[agentId]
       const isWinner = winner === agentId
       const isLoser = winner && winner !== agentId && agentId !== 'wildcard'
+      const anchorDimmed = hasSelection && !involvedAgents.has(agentId)
       const r = isWinner ? 48 : 40
 
       const g = anchorGroup.append('g')
         .attr('transform', `translate(${a.x},${a.y})`)
 
+      const baseFillOpacity = isLoser ? 0.3 : 0.9
       g.append('circle')
         .attr('r', r)
-        .attr('fill', agent.color).attr('fill-opacity', isLoser ? 0.3 : 0.9)
-        .attr('stroke', '#ffffff').attr('stroke-width', 3)
-        .attr('filter', `url(#glow-${agentId})`)
+        .attr('fill', agent.color).attr('fill-opacity', anchorDimmed ? 0.15 : baseFillOpacity)
+        .attr('stroke', '#ffffff').attr('stroke-width', 3).attr('stroke-opacity', anchorDimmed ? 0.2 : 1)
+        .attr('filter', anchorDimmed ? null : `url(#glow-${agentId})`)
 
+      // Agent name — outline + fill for contrast on all backgrounds
+      g.append('text')
+        .attr('text-anchor', 'middle').attr('dy', '-0.15em')
+        .attr('fill', 'none').attr('stroke', '#000000').attr('stroke-width', 4)
+        .attr('stroke-linejoin', 'round')
+        .attr('font-size', '16px').attr('font-weight', 700)
+        .attr('opacity', anchorDimmed ? 0.2 : (isLoser ? 0.3 : 0.7))
+        .style('pointer-events', 'none')
+        .text(agent.name)
       g.append('text')
         .attr('text-anchor', 'middle').attr('dy', '-0.15em')
         .attr('fill', '#ffffff').attr('font-size', '16px').attr('font-weight', 700)
-        .attr('opacity', isLoser ? 0.4 : 1)
+        .attr('opacity', anchorDimmed ? 0.2 : (isLoser ? 0.4 : 1))
+        .style('pointer-events', 'none')
         .text(agent.name)
 
+      // Model name — outline + fill
+      g.append('text')
+        .attr('text-anchor', 'middle').attr('dy', '1.1em')
+        .attr('fill', 'none').attr('stroke', '#000000').attr('stroke-width', 3)
+        .attr('stroke-linejoin', 'round')
+        .attr('font-size', '11px').attr('font-weight', 400)
+        .attr('opacity', anchorDimmed ? 0.15 : (isLoser ? 0.2 : 0.5))
+        .style('pointer-events', 'none')
+        .text(agent.model)
       g.append('text')
         .attr('text-anchor', 'middle').attr('dy', '1.1em')
         .attr('fill', '#ffffff').attr('font-size', '11px').attr('font-weight', 400)
-        .attr('opacity', isLoser ? 0.3 : 0.7)
+        .attr('opacity', anchorDimmed ? 0.15 : (isLoser ? 0.3 : 0.7))
+        .style('pointer-events', 'none')
         .text(agent.model)
     }
 
@@ -358,6 +443,7 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
         ref={svgRef}
         viewBox={`0 0 ${VB_W} ${VB_H}`}
         preserveAspectRatio="xMidYMid meet"
+        onClick={() => onNodeClickRef.current?.(null)}
         style={{
           width: '100%',
           height: '100%',
@@ -417,15 +503,7 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
 }
 
 // Legend as a separate horizontal bar (rendered outside the graph)
-function Legend({ claims }) {
-  const liveScore = useMemo(() => {
-    if (!claims?.length) return null
-    const score = computeWildcardScore(claims)
-    const advPts = score.advocate.agreed + score.critic.rebutted
-    const crtPts = score.critic.agreed + score.advocate.rebutted
-    return { advPts, crtPts }
-  }, [claims])
-
+function Legend() {
   return (
     <div style={{
       display: 'flex',
@@ -442,31 +520,20 @@ function Legend({ claims }) {
         <span key={id} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: AGENTS[id].color, display: 'inline-block' }} />
           <span style={{ color: AGENTS[id].color, fontWeight: 600 }}>{AGENTS[id].name}</span>
-          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>({AGENTS[id].model})</span>
+          <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>({AGENTS[id].model})</span>
         </span>
       ))}
-      <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-muted)' }}>
-        <span style={{ width: 24, height: 0, borderTop: '2px dashed var(--text-muted)', display: 'inline-block' }} />
-        <span>&#9656;</span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#ffffff' }}>
+        <svg width="32" height="12" style={{ display: 'block' }}>
+          <line x1="0" y1="6" x2="22" y2="6" stroke="currentColor" strokeWidth="2" strokeDasharray="4 3" />
+          <polygon points="22,2 30,6 22,10" fill="currentColor" />
+        </svg>
         <span>attacks</span>
       </span>
       <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
         <span style={{ width: 24, height: 0, borderTop: '3px solid #22c55e', display: 'inline-block' }} />
-        <span style={{ color: '#22c55e' }}>agrees</span>
+        <span style={{ color: '#22c55e', fontWeight: 600 }}>agrees</span>
       </span>
-      {liveScore && (liveScore.advPts > 0 || liveScore.crtPts > 0) && (() => {
-        const { advPts, crtPts } = liveScore
-        const leading = advPts > crtPts ? 'advocate' : crtPts > advPts ? 'critic' : null
-        const label = leading
-          ? `Leaning: ${AGENTS[leading].name} ${Math.max(advPts, crtPts)}-${Math.min(advPts, crtPts)}`
-          : `Tied ${advPts}-${crtPts}`
-        const color = leading ? AGENTS[leading].color : 'var(--text-muted)'
-        return (
-          <span style={{ color, fontWeight: 600 }}>
-            {label}
-          </span>
-        )
-      })()}
     </div>
   )
 }

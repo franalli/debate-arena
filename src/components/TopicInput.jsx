@@ -1,11 +1,51 @@
 import { useState } from 'react'
 
 const SUGGESTIONS = [
-  'AI will create more jobs than it destroys',
-  'Space colonization should be humanity\'s top priority',
-  'Social media does more harm than good',
-  'Universal basic income is inevitable'
+  ['AI will replace most software engineers within 5 years', 'Space colonization should be humanity\'s top priority'],
+  ['Social media does more harm than good', 'Universal basic income is inevitable'],
+  ['Pineapple belongs on pizza', 'Remote work is better than office work']
 ]
+
+function ShimmerButton({ text, onClick }) {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <div
+      style={{
+        position: 'relative',
+        borderRadius: '2rem',
+        padding: '1px',
+        background: 'linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate))',
+        backgroundSize: '200% 100%',
+        animation: 'border-shimmer 4s linear infinite',
+        cursor: 'pointer',
+        opacity: hovered ? 1 : 0.7,
+        transition: 'opacity 0.3s'
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={onClick}
+    >
+      <button
+        style={{
+          display: 'block',
+          width: '100%',
+          padding: '0.5rem 1rem',
+          background: 'var(--bg-card)',
+          borderRadius: '2rem',
+          color: '#ffffff',
+          fontSize: '0.85rem',
+          whiteSpace: 'nowrap',
+          transition: 'color 0.3s',
+          border: 'none',
+          cursor: 'pointer'
+        }}
+      >
+        {text}
+      </button>
+    </div>
+  )
+}
 
 export default function TopicInput({ onStart }) {
   const [topic, setTopic] = useState('')
@@ -34,7 +74,7 @@ export default function TopicInput({ onStart }) {
           WebkitBackgroundClip: 'text',
           WebkitTextFillColor: 'transparent'
         }}>
-          Debate Arena
+          ⚔ Debate Arena
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
           3 AI agents. 3 rounds. One topic.
@@ -85,35 +125,17 @@ export default function TopicInput({ onStart }) {
 
       <div style={{
         display: 'flex',
-        flexWrap: 'wrap',
+        flexDirection: 'column',
         gap: '0.5rem',
-        justifyContent: 'center',
-        maxWidth: '600px'
+        maxWidth: '700px',
+        width: '100%'
       }}>
-        {SUGGESTIONS.map((s) => (
-          <button
-            key={s}
-            onClick={() => setTopic(s)}
-            style={{
-              padding: '0.5rem 1rem',
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              borderRadius: '2rem',
-              color: 'var(--text-secondary)',
-              fontSize: '0.85rem',
-              transition: 'all var(--transition)'
-            }}
-            onMouseEnter={(e) => {
-              e.target.style.borderColor = 'var(--wildcard)'
-              e.target.style.color = 'var(--text-primary)'
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.borderColor = 'var(--border)'
-              e.target.style.color = 'var(--text-secondary)'
-            }}
-          >
-            {s}
-          </button>
+        {SUGGESTIONS.map((row, i) => (
+          <div key={i} style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+            {row.map((s) => (
+              <ShimmerButton key={s} text={s} onClick={() => setTopic(s)} />
+            ))}
+          </div>
         ))}
       </div>
     </div>

@@ -39,6 +39,11 @@ export function runDebate(topic, maxRounds, callbacks) {
         }
 
         onRoundComplete?.(round)
+
+        // Brief pause between rounds so toast is visible before next round starts
+        if (round < maxRounds && !abortController.signal.aborted) {
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
       }
 
       // Verdict phase — Wildcard delivers final judgment

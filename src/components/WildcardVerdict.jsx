@@ -1,140 +1,150 @@
+import { useState, forwardRef, useImperativeHandle, useRef } from 'react'
 import { AGENTS } from '../lib/agents.js'
 import { computeWildcardScore } from '../lib/graphUtils.js'
 
-export default function WildcardVerdict({ claims, verdictText }) {
+const WildcardVerdict = forwardRef(function WildcardVerdict({ claims, verdictText }, ref) {
+  const [expanded, setExpanded] = useState(false)
+  const divRef = useRef(null)
   const score = computeWildcardScore(claims)
 
-  // Points for X = wildcard agreed with X + wildcard rebutted opponent
-  const advPoints = score.advocate.agreed + score.critic.rebutted
-  const crtPoints = score.critic.agreed + score.advocate.rebutted
-  const winner = advPoints > crtPoints ? 'advocate'
-    : crtPoints > advPoints ? 'critic'
+  const _winner = score.advocate > score.critic ? 'advocate'
+    : score.critic > score.advocate ? 'critic'
     : null
-  const winnerName = winner ? AGENTS[winner].name : null
-  const winnerColor = winner ? AGENTS[winner].color : 'var(--text-muted)'
 
-  // Bar proportions (same points used for winner)
-  const total = advPoints + crtPoints || 1
-  const advPct = Math.round((advPoints / total) * 100)
+  // Bar proportions based on rounds won
+  const total = score.rounds || 1
+  const advPct = Math.round((score.advocate / total) * 100)
   const crtPct = 100 - advPct
 
+  useImperativeHandle(ref, () => ({
+    expand: () => setExpanded(true),
+    scrollIntoView: (opts) => divRef.current?.scrollIntoView(opts)
+  }))
+
   return (
-    <div style={{
-      background: 'var(--bg-secondary)',
-      borderTop: '1px solid var(--border)',
-      padding: '1.5rem 2rem'
-    }}>
-      {/* Title */}
-      <div style={{
+    <div
+      ref={divRef}
+      style={{
+        background: 'var(--bg-secondary)',
+        borderTop: '1px solid var(--border)',
+        flexShrink: expanded ? 1 : 0,
+        minHeight: 0,
         display: 'flex',
-        alignItems: 'center',
-        gap: '0.5rem',
-        marginBottom: '0.75rem'
-      }}>
+        flexDirection: 'column'
+      }}
+    >
+      {/* Collapsed header bar — just show verdict toggle */}
+      <div
+        onClick={() => setExpanded(prev => !prev)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0.7rem 2rem',
+          cursor: 'pointer',
+          userSelect: 'none'
+        }}
+      >
         <span style={{
-          width: 14,
-          height: 14,
-          borderRadius: '50%',
-          background: AGENTS.wildcard.color,
-          display: 'inline-block'
-        }} />
-        <span style={{
-          fontSize: '1.1rem',
-          fontWeight: 700,
-          color: AGENTS.wildcard.color,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em'
+          fontSize: '0.9rem',
+          fontWeight: 600,
+          background: 'linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate))',
+          backgroundSize: '200% 100%',
+          animation: 'border-shimmer 4s linear infinite',
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent'
         }}>
-          Wildcard Verdict
+          {expanded ? '▲ Hide verdict' : '▼ Show verdict'}
         </span>
       </div>
 
-      {/* Tally */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: '0.5rem',
-        marginBottom: '0.75rem',
-        fontSize: '1rem'
-      }}>
-        <div style={{ color: 'var(--text-secondary)' }}>
-          Agreed with <span style={{ color: AGENTS.advocate.color, fontWeight: 600 }}>Advocate</span>: {score.advocate.agreed}
-        </div>
-        <div style={{ color: 'var(--text-secondary)' }}>
-          Agreed with <span style={{ color: AGENTS.critic.color, fontWeight: 600 }}>Critic</span>: {score.critic.agreed}
-        </div>
-        <div style={{ color: 'var(--text-secondary)' }}>
-          Rebutted <span style={{ color: AGENTS.advocate.color, fontWeight: 600 }}>Advocate</span>: {score.advocate.rebutted}
-        </div>
-        <div style={{ color: 'var(--text-secondary)' }}>
-          Rebutted <span style={{ color: AGENTS.critic.color, fontWeight: 600 }}>Critic</span>: {score.critic.rebutted}
-        </div>
-      </div>
+      {/* Expandable details */}
+      {expanded && (
+        <div style={{ padding: '0 2rem 2.5rem', overflowY: 'auto', minHeight: 0, flex: 1 }}>
+          {/* Round score */}
+          <div style={{
+            display: 'flex',
+            gap: '1.5rem',
+            marginBottom: '0.75rem',
+            fontSize: '1rem'
+          }}>
+            <div style={{ color: 'var(--text-secondary)' }}>
+              Rounds for <span style={{ color: AGENTS.advocate.color, fontWeight: 600 }}>Advocate</span>: {score.advocate}
+            </div>
+            <div style={{ color: 'var(--text-secondary)' }}>
+              Rounds for <span style={{ color: AGENTS.critic.color, fontWeight: 600 }}>Critic</span>: {score.critic}
+            </div>
+            <div style={{ color: 'var(--text-muted)' }}>
+              of {score.rounds}
+            </div>
+          </div>
 
-      {/* Progress bar */}
-      <div style={{
-        display: 'flex',
-        height: 32,
-        borderRadius: 'var(--radius)',
-        overflow: 'hidden',
-        marginBottom: '0.5rem',
-        border: '1px solid var(--border)'
-      }}>
-        <div style={{
-          width: `${advPct}%`,
-          background: AGENTS.advocate.color,
-          transition: 'width 0.8s ease',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: '0.9rem',
-          fontWeight: 700,
-          color: '#fff',
-          minWidth: advPct > 10 ? 'auto' : 0
-        }}>
-          {advPct > 10 && `${advPct}%`}
-        </div>
-        <div style={{
-          width: `${crtPct}%`,
-          background: AGENTS.critic.color,
-          transition: 'width 0.8s ease',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: '0.9rem',
-          fontWeight: 700,
-          color: '#fff',
-          minWidth: crtPct > 10 ? 'auto' : 0
-        }}>
-          {crtPct > 10 && `${crtPct}%`}
-        </div>
-      </div>
+          {/* Progress bar */}
+          <div style={{
+            display: 'flex',
+            height: 32,
+            borderRadius: 'var(--radius)',
+            overflow: 'hidden',
+            marginBottom: '0.75rem',
+            border: '1px solid var(--border)'
+          }}>
+            <div style={{
+              width: `${advPct}%`,
+              background: AGENTS.advocate.color,
+              transition: 'width 0.8s ease',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.9rem',
+              fontWeight: 700,
+              color: '#fff',
+              minWidth: advPct > 10 ? 'auto' : 0
+            }}>
+              {advPct > 10 && `${advPct}%`}
+            </div>
+            <div style={{
+              width: `${crtPct}%`,
+              background: AGENTS.critic.color,
+              transition: 'width 0.8s ease',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.9rem',
+              fontWeight: 700,
+              color: '#fff',
+              minWidth: crtPct > 10 ? 'auto' : 0
+            }}>
+              {crtPct > 10 && `${crtPct}%`}
+            </div>
+          </div>
 
-      {/* Winner label */}
-      <div style={{
-        fontSize: '1.35rem',
-        fontWeight: 700,
-        color: winnerColor,
-        marginBottom: verdictText ? '0.6rem' : 0
-      }}>
-        {winner
-          ? `${winnerName} wins`
-          : 'Draw — neither side convinced the Wildcard'}
-      </div>
-
-      {/* Verdict quote */}
-      {verdictText && (
-        <div style={{
-          fontSize: '1rem',
-          lineHeight: 1.5,
-          color: 'var(--text-secondary)',
-          fontStyle: 'italic',
-          borderLeft: `4px solid ${AGENTS.wildcard.color}`,
-          paddingLeft: '0.75rem'
-        }}>
-          &ldquo;{verdictText}&rdquo;
+          {/* Verdict details */}
+          {verdictText && (
+            <div style={{
+              fontSize: '1rem',
+              lineHeight: 1.6,
+              color: 'var(--text-secondary)',
+              borderLeft: `4px solid ${AGENTS.wildcard.color}`,
+              paddingLeft: '0.75rem'
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.35rem' }}>Key winning arguments:</div>
+              <ul style={{ margin: '0 0 0.6rem', paddingLeft: '1.2rem' }}>
+                {verdictText.winningArguments.map((arg, i) => (
+                  <li key={i} style={{ marginBottom: '0.2rem' }}>{arg}</li>
+                ))}
+              </ul>
+              {verdictText.loserGap && (
+                <div>
+                  <span style={{ fontWeight: 600 }}>The loser&rsquo;s biggest gap: </span>
+                  {verdictText.loserGap}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
   )
-}
+})
+
+export default WildcardVerdict

@@ -1,11 +1,13 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import TopicInput from './components/TopicInput.jsx'
 import DebateGraph from './components/DebateGraph.jsx'
 import Transcript from './components/Transcript.jsx'
 import ThinkingIndicator from './components/ThinkingIndicator.jsx'
 import WildcardVerdict from './components/WildcardVerdict.jsx'
+import RoundToasts from './components/RoundToasts.jsx'
 import { runDebate } from './lib/debate.js'
-import { buildGraphData } from './lib/graphUtils.js'
+import { buildGraphData, computeWildcardScore } from './lib/graphUtils.js'
+import { AGENTS } from './lib/agents.js'
 
 export default function App() {
   const [topic, setTopic] = useState('')
@@ -17,8 +19,11 @@ export default function App() {
   const [graphData, setGraphData] = useState({ nodes: [], links: [] })
   const [selectedNode, setSelectedNode] = useState(null)
   const [verdictText, setVerdictText] = useState(null)
+  const [roundResults, setRoundResults] = useState([])
   const [error, setError] = useState(null)
   const cancelRef = useRef(null)
+  const selectionTimerRef = useRef(null)
+  const verdictRef = useRef(null)
 
   const startDebate = useCallback((debateTopic) => {
     setTopic(debateTopic)
@@ -28,6 +33,7 @@ export default function App() {
     setGraphData({ nodes: [], links: [] })
     setSelectedNode(null)
     setVerdictText(null)
+    setRoundResults([])
     setError(null)
 
     let accumulated = []
@@ -44,13 +50,37 @@ export default function App() {
         setGraphData(buildGraphData(accumulated))
       },
       onRoundComplete: (round) => {
+        // Determine round winner from Wildcard's agreement
+        const wc = accumulated.find(c => c.agentId === 'wildcard' && c.round === round)
+        if (wc?.agrees_with) {
+          const target = accumulated.find(c => c.id === wc.agrees_with)
+          const winnerId = target?.agentId || (wc.agrees_with.startsWith('adv') ? 'advocate' : wc.agrees_with.startsWith('crt') ? 'critic' : null)
+          if (winnerId && AGENTS[winnerId]) {
+            setRoundResults(prev => [...prev, {
+              round,
+              label: AGENTS[winnerId].name,
+              color: AGENTS[winnerId].color
+            }])
+          }
+        }
         setCurrentRound(round + 1)
       },
-      onError: (err, agentId) => {
+      onError: (err, agentId, round) => {
         setThinkingAgent(null)
         setError(err.message)
-        if (err.message.includes('401')) {
+        // Terminal errors: auth failures, or any error before debate has claims (e.g. rate limit)
+        if (err.message.includes('401') || accumulated.length === 0) {
+          cancelRef.current?.()
           setStatus('error')
+        }
+        // Failure toast for API errors mid-debate
+        if (agentId && accumulated.length > 0) {
+          setRoundResults(prev => [...prev, {
+            type: 'error',
+            round,
+            label: AGENTS[agentId]?.model || agentId,
+            color: '#ef4444'
+          }])
         }
       },
       onVerdictStart: () => {
@@ -84,12 +114,39 @@ export default function App() {
     setGraphData({ nodes: [], links: [] })
     setThinkingAgent(null)
     setVerdictText(null)
+    setRoundResults([])
     setError(null)
   }
 
   const handleClaimClick = useCallback((claimId) => {
-    setSelectedNode(prev => prev === claimId ? null : claimId)
+    // Clear any existing auto-deselect timer
+    if (selectionTimerRef.current) {
+      clearTimeout(selectionTimerRef.current)
+      selectionTimerRef.current = null
+    }
+    setSelectedNode(prev => {
+      if (prev === claimId) return null
+      // Auto-deselect after 3 seconds
+      selectionTimerRef.current = setTimeout(() => {
+        setSelectedNode(null)
+        selectionTimerRef.current = null
+      }, 3000)
+      return claimId
+    })
   }, [])
+
+  const liveScore = useMemo(() => {
+    if (!allClaims?.length) return null
+    const score = computeWildcardScore(allClaims)
+    if (score.advocate === 0 && score.critic === 0) return null
+    const leading = score.advocate > score.critic ? 'advocate' : score.critic > score.advocate ? 'critic' : null
+    const isComplete = status === 'complete'
+    const label = leading
+      ? `${AGENTS[leading].name}${isComplete ? ' wins' : ''} ${Math.max(score.advocate, score.critic)}-${Math.min(score.advocate, score.critic)}`
+      : `Draw ${score.advocate}-${score.critic}`
+    const color = leading ? AGENTS[leading].color : 'var(--text-muted)'
+    return { label, color, isComplete }
+  }, [allClaims, status])
 
   if (status === 'idle') {
     return <TopicInput onStart={startDebate} />
@@ -107,7 +164,8 @@ export default function App() {
         background: 'var(--bg-secondary)',
         flexShrink: 0
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        {/* Left: Title + Rounds */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2rem' }}>
           <h1 style={{
             fontSize: '1.2rem',
             fontWeight: 700,
@@ -115,7 +173,7 @@ export default function App() {
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent'
           }}>
-            Debate Arena
+            ⚔ Debate Arena
           </h1>
 
           {/* Round dots */}
@@ -136,12 +194,36 @@ export default function App() {
                 }}
               />
             ))}
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>
-              R{Math.min(currentRound, maxRounds)}/{maxRounds}
+            <span style={{ fontSize: '0.75rem', color: '#ffffff', marginLeft: '0.25rem' }}>
+              Round {Math.min(currentRound, maxRounds)}/{maxRounds}
             </span>
           </div>
         </div>
 
+        {/* Center: Score */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {liveScore && (
+            <span
+              onClick={liveScore.isComplete ? () => {
+                verdictRef.current?.expand()
+                setTimeout(() => verdictRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+              } : undefined}
+              style={{
+                fontSize: '0.95rem',
+                fontWeight: 700,
+                color: liveScore.color,
+                cursor: liveScore.isComplete ? 'pointer' : 'default',
+                textDecoration: liveScore.isComplete ? 'underline' : 'none',
+                textDecorationStyle: 'dotted',
+                textUnderlineOffset: '3px'
+              }}
+            >
+              {liveScore.label}
+            </span>
+          )}
+        </div>
+
+        {/* Right: Topic + Buttons */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <span style={{
             fontSize: '0.85rem',
@@ -258,8 +340,8 @@ export default function App() {
 
         {/* Right: Graph + Legend + Verdict (65%) */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-          {/* Graph area — never shrinks below 55vh */}
-          <div style={{ minHeight: '55vh', flex: 1, position: 'relative' }}>
+          {/* Graph area */}
+          <div style={{ minHeight: '40vh', flex: 1, position: 'relative' }}>
             <DebateGraph
               graphData={graphData}
               thinkingAgent={thinkingAgent}
@@ -268,14 +350,15 @@ export default function App() {
               status={status}
               claims={allClaims}
             />
+            {roundResults.length > 0 && <RoundToasts results={roundResults} />}
           </div>
 
           {/* Legend bar — outside SVG, between graph and verdict */}
-          <DebateGraph.Legend claims={allClaims} />
+          <DebateGraph.Legend />
 
           {/* Wildcard verdict */}
           {status === 'complete' && allClaims.length > 0 && (
-            <WildcardVerdict claims={allClaims} verdictText={verdictText} />
+            <WildcardVerdict ref={verdictRef} claims={allClaims} verdictText={verdictText} />
           )}
         </div>
       </div>
