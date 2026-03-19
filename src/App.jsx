@@ -167,27 +167,30 @@ export default function App() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
       {/* Header */}
       <div style={{
+        position: 'relative',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0.75rem 1.5rem',
+        height: '48px',
+        padding: '0 24px',
         borderBottom: '1px solid var(--border)',
         background: 'var(--bg-secondary)',
         flexShrink: 0
       }}>
         {/* Left: Title + Rounds */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '2rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <h1 style={{
-            fontSize: '1.2rem',
+            fontSize: '16px',
             fontWeight: 700,
             background: 'linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic))',
             WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent'
+            WebkitTextFillColor: 'transparent',
+            margin: 0
           }}>
             ⚔ Debate Arena
           </h1>
 
-          {/* Round dots */}
+          {/* Round dots + label */}
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
             {Array.from({ length: maxRounds }, (_, i) => (
               <span
@@ -205,14 +208,21 @@ export default function App() {
                 }}
               />
             ))}
-            <span style={{ fontSize: '0.75rem', color: '#ffffff', marginLeft: '0.25rem' }}>
+            <span style={{ fontSize: '13px', color: 'var(--text-secondary)', marginLeft: '4px' }}>
               Round {Math.min(currentRound, maxRounds)}/{maxRounds}
             </span>
           </div>
         </div>
 
-        {/* Center: Score */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {/* Center: Score — absolutely centered on the full bar */}
+        <div style={{
+          position: 'absolute',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          display: 'flex',
+          alignItems: 'center',
+          pointerEvents: liveScore?.isComplete ? 'auto' : 'none'
+        }}>
           {liveScore && (
             <span
               onClick={liveScore.isComplete ? () => {
@@ -220,13 +230,14 @@ export default function App() {
                 setTimeout(() => verdictRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
               } : undefined}
               style={{
-                fontSize: '1.3rem',
-                fontWeight: 800,
+                fontSize: '22px',
+                fontWeight: 700,
                 color: liveScore.color,
                 cursor: liveScore.isComplete ? 'pointer' : 'default',
                 textDecoration: liveScore.isComplete ? 'underline' : 'none',
                 textDecorationStyle: 'dotted',
-                textUnderlineOffset: '3px'
+                textUnderlineOffset: '3px',
+                whiteSpace: 'nowrap'
               }}
             >
               {liveScore.label}
@@ -234,12 +245,12 @@ export default function App() {
           )}
         </div>
 
-        {/* Right: Topic + Buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        {/* Right: Topic + Fast/Deep + New Debate */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <span style={{
-            fontSize: '0.85rem',
-            color: 'var(--text-secondary)',
-            maxWidth: 400,
+            fontSize: '13px',
+            color: '#999',
+            maxWidth: '350px',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap'
@@ -255,7 +266,8 @@ export default function App() {
                 border: '1px solid var(--critic)',
                 borderRadius: 'var(--radius)',
                 color: 'var(--critic)',
-                fontSize: '0.8rem',
+                fontSize: '13px',
+                cursor: 'pointer',
                 transition: 'all var(--transition)'
               }}
               onMouseEnter={(e) => {
@@ -277,7 +289,8 @@ export default function App() {
             border: '1px solid var(--border)',
             borderRadius: 'var(--radius)',
             overflow: 'hidden',
-            fontSize: '0.8rem',
+            fontSize: '13px',
+            marginLeft: '8px',
             opacity: 0.4,
             pointerEvents: 'none'
           }}>
@@ -286,7 +299,7 @@ export default function App() {
                 key={m}
                 onClick={() => setMode(m)}
                 style={{
-                  padding: '0.4rem 0.7rem',
+                  padding: '0.3rem 0.6rem',
                   background: mode === m ? 'var(--wildcard)' : 'transparent',
                   color: mode === m ? '#fff' : 'var(--text-secondary)',
                   border: 'none',
@@ -312,12 +325,12 @@ export default function App() {
             <button
               onClick={handleNewDebate}
               style={{
-                padding: '0.4rem 0.8rem',
+                padding: '0.3rem 0.7rem',
                 background: 'var(--bg-card)',
                 border: 'none',
                 borderRadius: 'calc(var(--radius) - 1px)',
                 color: 'white',
-                fontSize: '0.8rem',
+                fontSize: '13px',
                 cursor: 'pointer',
                 display: 'block',
                 width: '100%',
