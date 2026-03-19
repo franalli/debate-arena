@@ -43,5 +43,5 @@ Set in `.env.local`: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`. Op
 ## Notes
 
 - JSON parsing in agents.js is lenient — strips markdown code fences and extracts JSON from mixed LLM text.
-- CORS is locked to `debate-arena.onrender.com` in production.
+- Deployed at `https://debate-arena-ten.vercel.app`. No CORS config needed — API functions are same-origin (Vercel serverless).
 - Rate limiting is in-memory; resets on server restart.

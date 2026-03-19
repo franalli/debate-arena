@@ -74,14 +74,14 @@ export async function callGoogle(systemPrompt, userMessage) {
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ parts: [{ text: userMessage }] }],
       generationConfig: {
-        maxOutputTokens: Number(process.env.GOOGLE_MAX_TOKENS) || 500,
-        thinkingConfig: { thinkingBudget: 0 }
+        maxOutputTokens: (Number(process.env.GOOGLE_MAX_TOKENS) || 500) + 150
       }
     })
   })
   if (!res.ok) throw new Error(`Google API error (${res.status})`)
   const data = await res.json()
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
+  const parts = data.candidates?.[0]?.content?.parts || []
+  const text = parts.filter(p => !p.thought).map(p => p.text).join('')
   if (!text) throw new Error('Empty response from Google')
   return text
 }
