@@ -300,28 +300,32 @@ export default function App() {
             ))}
           </div>
 
-          <button
-            onClick={handleNewDebate}
-            style={{
-              padding: '0.4rem 0.8rem',
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius)',
-              color: 'var(--text-secondary)',
-              fontSize: '0.8rem',
-              transition: 'all var(--transition)'
-            }}
-            onMouseEnter={(e) => {
-              e.target.style.borderColor = 'var(--text-muted)'
-              e.target.style.color = 'var(--text-primary)'
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.borderColor = 'var(--border)'
-              e.target.style.color = 'var(--text-secondary)'
-            }}
-          >
-            New Debate
-          </button>
+          <div style={{
+            borderRadius: 'var(--radius)',
+            padding: '1px',
+            background: status === 'complete'
+              ? 'linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate))'
+              : 'var(--border)',
+            backgroundSize: '200% 100%',
+            animation: status === 'complete' ? 'border-shimmer 4s linear infinite' : 'none',
+          }}>
+            <button
+              onClick={handleNewDebate}
+              style={{
+                padding: '0.4rem 0.8rem',
+                background: 'var(--bg-card)',
+                border: 'none',
+                borderRadius: 'calc(var(--radius) - 1px)',
+                color: 'white',
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                display: 'block',
+                width: '100%',
+              }}
+            >
+              New Debate
+            </button>
+          </div>
         </div>
       </div>
 
