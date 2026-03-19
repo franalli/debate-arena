@@ -65,7 +65,7 @@ export async function callOpenAI(systemPrompt, userMessage) {
 }
 
 export async function callGoogle(systemPrompt, userMessage) {
-  const model = process.env.GOOGLE_MODEL || 'gemini-2.5-pro-preview-06-05'
+  const model = process.env.GOOGLE_MODEL || 'gemini-3-flash-preview'
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GOOGLE_API_KEY}`
   const res = await fetch(url, {
     method: 'POST',
@@ -74,7 +74,8 @@ export async function callGoogle(systemPrompt, userMessage) {
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ parts: [{ text: userMessage }] }],
       generationConfig: {
-        maxOutputTokens: (Number(process.env.GOOGLE_MAX_TOKENS) || 500) + 150
+        maxOutputTokens: Number(process.env.GOOGLE_MAX_TOKENS) || 500,
+        thinkingConfig: { thinkingBudget: 0 }
       }
     })
   })
