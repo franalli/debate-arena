@@ -25,8 +25,8 @@ function Toast({ result }) {
 
   useEffect(() => {
     const enterTimer = requestAnimationFrame(() => setPhase('visible'))
-    const exitTimer = setTimeout(() => setPhase('exit'), isError ? 4000 : 800)
-    const goneTimer = setTimeout(() => setPhase('gone'), isError ? 4400 : 1200)
+    const exitTimer = setTimeout(() => setPhase('exit'), isError ? 4000 : 1500)
+    const goneTimer = setTimeout(() => setPhase('gone'), isError ? 4400 : 1900)
     return () => {
       cancelAnimationFrame(enterTimer)
       clearTimeout(exitTimer)
