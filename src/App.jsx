@@ -249,7 +249,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <span style={{
             fontSize: '13px',
-            color: '#999',
+            color: '#fff',
             maxWidth: '350px',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
