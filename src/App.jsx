@@ -12,6 +12,7 @@ import { AGENTS } from './lib/agents.js'
 export default function App() {
   const [topic, setTopic] = useState('')
   const [status, setStatus] = useState('idle') // idle | running | complete | error
+  const [mode, setMode] = useState('fast')
   const [currentRound, setCurrentRound] = useState(0)
   const maxRounds = 3
   const [thinkingAgent, setThinkingAgent] = useState(null)
@@ -25,7 +26,9 @@ export default function App() {
   const selectionTimerRef = useRef(null)
   const verdictRef = useRef(null)
 
-  const startDebate = useCallback((debateTopic) => {
+  const startDebate = useCallback((debateTopic, selectedMode) => {
+    if (selectedMode) setMode(selectedMode)
+    const activeMode = selectedMode || mode
     setTopic(debateTopic)
     setStatus('running')
     setCurrentRound(1)
@@ -94,10 +97,10 @@ export default function App() {
         setThinkingAgent(null)
         setStatus('complete')
       }
-    })
+    }, activeMode)
 
     cancelRef.current = cancel
-  }, [])
+  }, [mode, maxRounds])
 
   const handleStop = () => {
     if (cancelRef.current) cancelRef.current()
@@ -259,6 +262,36 @@ export default function App() {
               Stop
             </button>
           )}
+          {/* Fast/Deep toggle */}
+          <div style={{
+            display: 'flex',
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius)',
+            overflow: 'hidden',
+            fontSize: '0.8rem',
+            opacity: 0.4,
+            pointerEvents: 'none'
+          }}>
+            {['fast', 'deep'].map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                style={{
+                  padding: '0.4rem 0.7rem',
+                  background: mode === m ? 'var(--wildcard)' : 'transparent',
+                  color: mode === m ? '#fff' : 'var(--text-secondary)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'all var(--transition)',
+                  textTransform: 'capitalize'
+                }}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+
           <button
             onClick={handleNewDebate}
             style={{

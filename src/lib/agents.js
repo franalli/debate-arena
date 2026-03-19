@@ -55,7 +55,7 @@ function parseAgentResponse(raw) {
       // Enforce single claim per agent per turn — take only the first
       const c = parsed.claims[0]
       return [{
-        text: String(c.text || '').slice(0, 200),
+        text: String(c.text || ''),
         rebuts: c.rebuts || null,
         agrees_with: c.agrees_with || null
       }]
@@ -64,17 +64,17 @@ function parseAgentResponse(raw) {
     // Fallback: wrap raw text as single claim
   }
 
-  return [{ text: raw.trim().slice(0, 200), rebuts: null, agrees_with: null }]
+  return [{ text: raw.trim(), rebuts: null, agrees_with: null }]
 }
 
 // ── Public API ──
 
-export async function callAgent(agentId, topic, allClaims, round, signal) {
+export async function callAgent(agentId, topic, allClaims, round, signal, mode) {
   const res = await fetch('/api/debate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     signal,
-    body: JSON.stringify({ agent: agentId, topic, history: allClaims, round })
+    body: JSON.stringify({ agent: agentId, topic, history: allClaims, round, mode })
   })
 
   if (!res.ok) {
@@ -128,5 +128,5 @@ function parseVerdictResponse(raw) {
 
   // Fallback: strip any JSON wrapper and show as plain text
   const plain = raw.replace(/[{}[\]"]/g, '').replace(/winning_arguments:|loser_gap:/g, '').trim()
-  return { winningArguments: [plain.slice(0, 300)], loserGap: '' }
+  return { winningArguments: [plain], loserGap: '' }
 }

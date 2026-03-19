@@ -13,7 +13,7 @@ RULES:
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
 
-  const topic = req.body.topic?.slice(0, 200)
+  const topic = req.body.topic
   if (!topic || topic.length < 3) return res.status(400).json({ error: 'Topic required' })
 
   const { history } = req.body

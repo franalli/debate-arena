@@ -1,6 +1,6 @@
 import { AGENTS, AGENT_ORDER, callAgent, callVerdictAgent } from './agents.js'
 
-export function runDebate(topic, maxRounds, callbacks) {
+export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
   const { onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete, onVerdictStart, onVerdict } = callbacks
   const abortController = new AbortController()
   const allClaims = []
@@ -15,7 +15,7 @@ export function runDebate(topic, maxRounds, callbacks) {
           onAgentStart?.(agentId, round)
 
           try {
-            const rawClaims = await callAgent(agentId, topic, allClaims, round, abortController.signal)
+            const rawClaims = await callAgent(agentId, topic, allClaims, round, abortController.signal, mode)
 
             const newClaims = rawClaims.map((c, i) => {
               claimCounter++

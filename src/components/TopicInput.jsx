@@ -49,10 +49,12 @@ function ShimmerButton({ text, onClick }) {
 
 export default function TopicInput({ onStart }) {
   const [topic, setTopic] = useState('')
+  const [mode, setMode] = useState('fast')
+  const rounds = 3
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (topic.trim()) onStart(topic.trim())
+    if (topic.trim()) onStart(topic.trim(), mode)
   }
 
   return (
@@ -77,50 +79,85 @@ export default function TopicInput({ onStart }) {
           ⚔ Debate Arena
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
-          3 AI agents. 3 rounds. One topic.
+          3 AI agents. {rounds} rounds. One topic.
         </p>
       </div>
 
       <form onSubmit={handleSubmit} style={{
         display: 'flex',
+        flexDirection: 'column',
         gap: '0.75rem',
         width: '100%',
-        maxWidth: '600px'
+        maxWidth: '800px'
       }}>
-        <input
-          type="text"
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          placeholder="Enter a debate topic..."
-          autoFocus
-          style={{
-            flex: 1,
-            padding: '0.85rem 1.2rem',
+        {/* Input + Start row */}
+        <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <input
+            type="text"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="Enter a debate topic..."
+            autoFocus
+            style={{
+              flex: 1,
+              padding: '0.85rem 1.2rem',
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius)',
+              color: 'var(--text-primary)',
+              fontSize: '1rem',
+              outline: 'none',
+              transition: 'border-color var(--transition)'
+            }}
+            onFocus={(e) => e.target.style.borderColor = 'var(--wildcard)'}
+            onBlur={(e) => e.target.style.borderColor = 'var(--border)'}
+          />
+          <button
+            type="submit"
+            disabled={!topic.trim()}
+            style={{
+              padding: '0.85rem 1.5rem',
+              background: topic.trim() ? 'var(--wildcard)' : 'var(--bg-card)',
+              color: topic.trim() ? '#fff' : 'var(--text-muted)',
+              borderRadius: 'var(--radius)',
+              fontWeight: 600,
+              transition: 'all var(--transition)'
+            }}
+          >
+            Start
+          </button>
+        </div>
+
+        {/* Fast/Deep toggle row */}
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <div style={{
+            display: 'flex',
             background: 'var(--bg-card)',
             border: '1px solid var(--border)',
             borderRadius: 'var(--radius)',
-            color: 'var(--text-primary)',
-            fontSize: '1rem',
-            outline: 'none',
-            transition: 'border-color var(--transition)'
-          }}
-          onFocus={(e) => e.target.style.borderColor = 'var(--wildcard)'}
-          onBlur={(e) => e.target.style.borderColor = 'var(--border)'}
-        />
-        <button
-          type="submit"
-          disabled={!topic.trim()}
-          style={{
-            padding: '0.85rem 1.5rem',
-            background: topic.trim() ? 'var(--wildcard)' : 'var(--bg-card)',
-            color: topic.trim() ? '#fff' : 'var(--text-muted)',
-            borderRadius: 'var(--radius)',
-            fontWeight: 600,
-            transition: 'all var(--transition)'
-          }}
-        >
-          Start
-        </button>
+            overflow: 'hidden',
+            fontSize: '0.85rem'
+          }}>
+            {['fast', 'deep'].map(m => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                style={{
+                  padding: '0.4rem 1.2rem',
+                  background: mode === m ? 'var(--wildcard)' : 'transparent',
+                  color: mode === m ? '#fff' : 'var(--text-secondary)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'all var(--transition)',
+                  textTransform: 'capitalize'
+                }}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
       </form>
 
       <div style={{
