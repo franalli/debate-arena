@@ -2,7 +2,7 @@ export const AGENTS = {
   advocate: {
     id: 'advocate',
     name: 'Advocate',
-    model: 'Gemini 3 Pro',
+    model: 'Gemini 3 Flash',
     label: 'Google',
     color: '#22c55e',
     dimColor: 'rgba(34, 197, 94, 0.15)',

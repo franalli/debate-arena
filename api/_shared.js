@@ -79,8 +79,13 @@ export async function callGoogle(systemPrompt, userMessage) {
       }
     })
   })
-  if (!res.ok) throw new Error(`Google API error (${res.status})`)
+  if (!res.ok) {
+    const errBody = await res.text()
+    console.error(`[Google API ${res.status}]`, errBody)
+    throw new Error(`Google API error (${res.status})`)
+  }
   const data = await res.json()
+  console.log('[Google raw response]', JSON.stringify(data, null, 2))
   const parts = data.candidates?.[0]?.content?.parts || []
   const text = parts.filter(p => !p.thought).map(p => p.text).join('')
   if (!text) throw new Error('Empty response from Google')
