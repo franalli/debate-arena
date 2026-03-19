@@ -121,7 +121,7 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
                       title={claim.text}
                     >
-                      &ldquo;{displayText}&rdquo;
+                      {displayText}
                       {rebuttalInfo && (
                         <div style={{
                           fontSize: '0.85rem',
@@ -134,7 +134,7 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                           <span style={{ color: rebuttalInfo.agentColor, fontWeight: 600 }}>
                             {rebuttalInfo.agentName}
                           </span>
-                          : &ldquo;{rebuttalInfo.text}&rdquo;
+                          : {rebuttalInfo.text}
                         </div>
                       )}
                       {agreementInfo && (
@@ -149,7 +149,7 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                           <span style={{ color: agreementInfo.agentColor, fontWeight: 600 }}>
                             {agreementInfo.agentName}
                           </span>
-                          : &ldquo;{agreementInfo.text}&rdquo;
+                          : {agreementInfo.text}
                         </div>
                       )}
                     </div>
