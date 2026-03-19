@@ -85,7 +85,7 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                       const targetText = target.text.length > 50
                         ? target.text.slice(0, 47) + '...'
                         : target.text
-                      rebuttalInfo = { agentName: targetAgent.name, agentColor: targetAgent.color, text: targetText }
+                      rebuttalInfo = { agentName: targetAgent.name, agentColor: targetAgent.color, text: targetText, fullText: target.text }
                     }
                   }
 
@@ -98,7 +98,7 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                       const targetText = target.text.length > 50
                         ? target.text.slice(0, 47) + '...'
                         : target.text
-                      agreementInfo = { agentName: targetAgent.name, agentColor: targetAgent.color, text: targetText }
+                      agreementInfo = { agentName: targetAgent.name, agentColor: targetAgent.color, text: targetText, fullText: target.text }
                     }
                   }
 
@@ -119,15 +119,15 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                       }}
                       onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)' }}
                       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
-                      title={claim.text}
                     >
                       {displayText}
                       {rebuttalInfo && (
-                        <div style={{
+                        <div title={rebuttalInfo.fullText} style={{
                           fontSize: '0.85rem',
                           color: 'var(--text-muted)',
                           marginTop: '0.15rem',
-                          paddingLeft: '0.6rem'
+                          paddingLeft: '0.6rem',
+                          cursor: 'help'
                         }}>
                           <span style={{ opacity: 0.7 }}>{'\u21A9'}</span>{' '}
                           responding to{' '}
@@ -138,11 +138,12 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                         </div>
                       )}
                       {agreementInfo && (
-                        <div style={{
+                        <div title={agreementInfo.fullText} style={{
                           fontSize: '0.85rem',
                           color: '#4ade80',
                           marginTop: '0.15rem',
-                          paddingLeft: '0.6rem'
+                          paddingLeft: '0.6rem',
+                          cursor: 'help'
                         }}>
                           <span style={{ opacity: 0.7 }}>&#10003;</span>{' '}
                           agrees with{' '}
