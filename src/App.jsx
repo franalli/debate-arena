@@ -25,6 +25,7 @@ export default function App() {
   const cancelRef = useRef(null)
   const selectionTimerRef = useRef(null)
   const verdictRef = useRef(null)
+  const cooldownTimerRef = useRef(null)
 
   const startDebate = useCallback((debateTopic, selectedMode) => {
     if (selectedMode) setMode(selectedMode)
@@ -71,6 +72,12 @@ export default function App() {
       onError: (err, agentId, round) => {
         setThinkingAgent(null)
         setError(err.message)
+        // Auto-clear cooldown messages after the wait expires
+        const cooldownMatch = err.message.match(/Wait (\d+)s/)
+        if (cooldownMatch) {
+          if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
+          cooldownTimerRef.current = setTimeout(() => setError(null), Number(cooldownMatch[1]) * 1000)
+        }
         // Terminal errors: auth failures, or any error before debate has claims (e.g. rate limit)
         if (err.message.includes('401') || accumulated.length === 0) {
           cancelRef.current?.()
@@ -111,6 +118,7 @@ export default function App() {
 
   const handleNewDebate = () => {
     if (cancelRef.current) cancelRef.current()
+    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
     setStatus('idle')
     setTopic('')
     setAllClaims([])
@@ -147,7 +155,7 @@ export default function App() {
     const label = leading
       ? `${AGENTS[leading].name}${isComplete ? ' wins' : ''} ${Math.max(score.advocate, score.critic)}-${Math.min(score.advocate, score.critic)}`
       : `Draw ${score.advocate}-${score.critic}`
-    const color = leading ? AGENTS[leading].color : 'var(--text-muted)'
+    const color = leading ? AGENTS[leading].color : '#ffffff'
     return { label, color, isComplete }
   }, [allClaims, status])
 
@@ -212,8 +220,8 @@ export default function App() {
                 setTimeout(() => verdictRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
               } : undefined}
               style={{
-                fontSize: '0.95rem',
-                fontWeight: 700,
+                fontSize: '1.3rem',
+                fontWeight: 800,
                 color: liveScore.color,
                 cursor: liveScore.isComplete ? 'pointer' : 'default',
                 textDecoration: liveScore.isComplete ? 'underline' : 'none',
