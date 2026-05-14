@@ -1,6 +1,9 @@
 // Shared utilities for serverless API handlers.
 // Prefixed with _ so Vercel does not expose this as an endpoint.
 
+import { Redis } from '@upstash/redis'
+import { createHash } from 'node:crypto'
+
 export const CLAIM_ID_RE = /^[a-z]{3}_r\d{1,2}_\d{1,2}$/
 
 export const AGENT_NAME = { advocate: 'Advocate', critic: 'Critic', wildcard: 'Wildcard' }
@@ -79,40 +82,133 @@ export function validateHistory(history, round, agent, res) {
   return true
 }
 
-// ── Rate limiting (best-effort in serverless — resets on cold starts) ────────
-const RATE_LIMIT_IP_DAILY     = Number(process.env.RATE_LIMIT_IP_DAILY)    || 30
-const RATE_LIMIT_GLOBAL_DAILY = Number(process.env.RATE_LIMIT_GLOBAL_DAILY) || 300
-const DEBATE_COOLDOWN_MS      = Number(process.env.DEBATE_COOLDOWN_MS)      || 60_000
+// ── Rate limiting (KV-backed; shared across serverless instances) ────────────
+const RATE_LIMIT_IP_DAILY       = Number(process.env.RATE_LIMIT_IP_DAILY)       || 30
+const RATE_LIMIT_GLOBAL_DAILY   = Number(process.env.RATE_LIMIT_GLOBAL_DAILY)   || 300
+const DEBATE_COOLDOWN_MS        = Number(process.env.DEBATE_COOLDOWN_MS)        || 60_000
+const TTS_CHARS_IP_DAILY        = Number(process.env.TTS_CHARS_IP_DAILY)        || 20_000
+const TTS_CHARS_GLOBAL_DAILY    = Number(process.env.TTS_CHARS_GLOBAL_DAILY)    || 200_000
+const TTS_MAX_CHARS_PER_REQUEST = Number(process.env.TTS_MAX_CHARS_PER_REQUEST) || 1_000
+const TTS_CACHE_TTL_SECONDS     = Number(process.env.TTS_CACHE_TTL_SECONDS)     || 604_800
 
-const ipCounts = new Map()
-let globalDaily = 0
-let lastReset = Date.now()
+const DAY_PLUS_BUFFER_SECONDS = 90_000  // 25h — daily keys auto-expire after the day rolls over
+
+let _redis = null
+function getRedis() {
+  if (_redis) return _redis
+  const url = process.env.KV_REST_API_URL
+  const token = process.env.KV_REST_API_TOKEN
+  if (!url || !token) {
+    console.warn('[ratelimit] KV env vars missing; rate limiting disabled')
+    return null
+  }
+  _redis = new Redis({ url, token })
+  return _redis
+}
+
+function isoDate() {
+  return new Date().toISOString().slice(0, 10)
+}
 
 export function getIp(req) {
   return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown'
 }
 
-export function checkRateLimit(ip, isNewDebate) {
-  if (Date.now() - lastReset > 86_400_000) {
-    ipCounts.clear()
-    globalDaily = 0
-    lastReset = Date.now()
+export async function checkRateLimit(ip, isNewDebate) {
+  const redis = getRedis()
+  if (!redis) return null  // fail open: provider-side spend caps are the last line of defense
+
+  const day = isoDate()
+  const ipKey = `rl:ip:${day}:${ip}`
+  const globalKey = `rl:global:${day}`
+
+  try {
+    if (isNewDebate) {
+      const cdKey = `rl:cd:${ip}`
+      const cooldownSeconds = Math.ceil(DEBATE_COOLDOWN_MS / 1000)
+      const acquired = await redis.set(cdKey, '1', { nx: true, ex: cooldownSeconds })
+      if (acquired === null) {
+        const ttl = await redis.ttl(cdKey)
+        return `Wait ${ttl > 0 ? ttl : cooldownSeconds}s before starting a new debate.`
+      }
+    }
+
+    const results = await redis.pipeline()
+      .incr(ipKey)
+      .expire(ipKey, DAY_PLUS_BUFFER_SECONDS)
+      .incr(globalKey)
+      .expire(globalKey, DAY_PLUS_BUFFER_SECONDS)
+      .exec()
+    const ipCount = results[0]
+    const globalCount = results[2]
+
+    if (globalCount > RATE_LIMIT_GLOBAL_DAILY) return 'Daily limit reached. Back tomorrow.'
+    if (ipCount > RATE_LIMIT_IP_DAILY) return "You've reached the daily limit. Back tomorrow."
+    return null
+  } catch (err) {
+    console.error('[ratelimit] KV error:', err.message)
+    return null
+  }
+}
+
+// ── TTS char budget (for /api/tts when added) ────────────────────────────────
+export async function checkCharBudget(ip, chars) {
+  if (!Number.isInteger(chars) || chars <= 0) return 'Invalid request size.'
+  if (chars > TTS_MAX_CHARS_PER_REQUEST) {
+    return `Text too long (max ${TTS_MAX_CHARS_PER_REQUEST} chars per request).`
   }
 
-  const record = ipCounts.get(ip) || { daily: 0, lastDebate: 0 }
+  const redis = getRedis()
+  if (!redis) return null
 
-  if (globalDaily >= RATE_LIMIT_GLOBAL_DAILY) return 'Daily limit reached. Back tomorrow.'
-  if (record.daily >= RATE_LIMIT_IP_DAILY)    return "You've reached the daily limit. Back tomorrow."
-  if (isNewDebate && Date.now() - record.lastDebate < DEBATE_COOLDOWN_MS) {
-    const secsLeft = Math.ceil((DEBATE_COOLDOWN_MS - (Date.now() - record.lastDebate)) / 1000)
-    return `Wait ${secsLeft}s before starting a new debate.`
+  const day = isoDate()
+  const ipKey = `tts:chars:ip:${day}:${ip}`
+  const globalKey = `tts:chars:global:${day}`
+
+  try {
+    const results = await redis.pipeline()
+      .incrby(ipKey, chars)
+      .expire(ipKey, DAY_PLUS_BUFFER_SECONDS)
+      .incrby(globalKey, chars)
+      .expire(globalKey, DAY_PLUS_BUFFER_SECONDS)
+      .exec()
+    const ipChars = results[0]
+    const globalChars = results[2]
+
+    if (globalChars > TTS_CHARS_GLOBAL_DAILY) return 'Daily TTS budget reached. Back tomorrow.'
+    if (ipChars > TTS_CHARS_IP_DAILY) return "You've reached today's TTS limit."
+    return null
+  } catch (err) {
+    console.error('[tts-budget] KV error:', err.message)
+    return null
   }
+}
 
-  if (isNewDebate) record.lastDebate = Date.now()
-  record.daily++
-  ipCounts.set(ip, record)
-  globalDaily++
-  return null
+// ── TTS cache (content-addressed by model + voice + text) ────────────────────
+export function ttsCacheKey(text, model, voice) {
+  const hash = createHash('sha256').update(`${model}|${voice}|${text}`).digest('hex')
+  return `tts:cache:${hash}`
+}
+
+export async function getCachedTts(key) {
+  const redis = getRedis()
+  if (!redis) return null
+  try {
+    return await redis.get(key)
+  } catch (err) {
+    console.error('[tts-cache] get error:', err.message)
+    return null
+  }
+}
+
+export async function setCachedTts(key, audioBase64) {
+  const redis = getRedis()
+  if (!redis) return
+  try {
+    await redis.set(key, audioBase64, { ex: TTS_CACHE_TTL_SECONDS })
+  } catch (err) {
+    console.error('[tts-cache] set error:', err.message)
+  }
 }
 
 // ── History formatting ────────────────────────────────────────

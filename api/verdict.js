@@ -18,7 +18,7 @@ export default async function handler(req, res) {
   if (!checkOrigin(req, res)) return
 
   const ip = getIp(req)
-  const rateLimitError = checkRateLimit(ip, false)
+  const rateLimitError = await checkRateLimit(ip, false)
   if (rateLimitError) return res.status(429).json({ error: rateLimitError })
 
   const topic = req.body.topic

@@ -80,7 +80,7 @@ export default async function handler(req, res) {
   const round = Number(req.body.round)
   const isNewDebate = Number.isInteger(round) && round === 1
 
-  const rateLimitError = checkRateLimit(ip, isNewDebate)
+  const rateLimitError = await checkRateLimit(ip, isNewDebate)
   if (rateLimitError) return res.status(429).json({ error: rateLimitError })
 
   const topic = req.body.topic
