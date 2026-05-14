@@ -79,6 +79,42 @@ export function validateHistory(history, round, agent, res) {
   return true
 }
 
+// ── Rate limiting (best-effort in serverless — resets on cold starts) ────────
+const RATE_LIMIT_IP_DAILY     = Number(process.env.RATE_LIMIT_IP_DAILY)    || 30
+const RATE_LIMIT_GLOBAL_DAILY = Number(process.env.RATE_LIMIT_GLOBAL_DAILY) || 300
+const DEBATE_COOLDOWN_MS      = Number(process.env.DEBATE_COOLDOWN_MS)      || 60_000
+
+const ipCounts = new Map()
+let globalDaily = 0
+let lastReset = Date.now()
+
+export function getIp(req) {
+  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown'
+}
+
+export function checkRateLimit(ip, isNewDebate) {
+  if (Date.now() - lastReset > 86_400_000) {
+    ipCounts.clear()
+    globalDaily = 0
+    lastReset = Date.now()
+  }
+
+  const record = ipCounts.get(ip) || { daily: 0, lastDebate: 0 }
+
+  if (globalDaily >= RATE_LIMIT_GLOBAL_DAILY) return 'Daily limit reached. Back tomorrow.'
+  if (record.daily >= RATE_LIMIT_IP_DAILY)    return "You've reached the daily limit. Back tomorrow."
+  if (isNewDebate && Date.now() - record.lastDebate < DEBATE_COOLDOWN_MS) {
+    const secsLeft = Math.ceil((DEBATE_COOLDOWN_MS - (Date.now() - record.lastDebate)) / 1000)
+    return `Wait ${secsLeft}s before starting a new debate.`
+  }
+
+  if (isNewDebate) record.lastDebate = Date.now()
+  record.daily++
+  ipCounts.set(ip, record)
+  globalDaily++
+  return null
+}
+
 // ── History formatting ────────────────────────────────────────
 export function formatHistory(claims) {
   if (!Array.isArray(claims) || claims.length === 0)

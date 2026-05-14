@@ -1,4 +1,4 @@
-import { formatHistory, callAnthropic, checkOrigin, validateTopic } from './_shared.js'
+import { formatHistory, callAnthropic, checkOrigin, validateTopic, checkRateLimit, getIp } from './_shared.js'
 
 const MAX_VERDICT_HISTORY = 9  // 3 rounds × 3 agents
 
@@ -16,6 +16,10 @@ RULES:
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   if (!checkOrigin(req, res)) return
+
+  const ip = getIp(req)
+  const rateLimitError = checkRateLimit(ip, false)
+  if (rateLimitError) return res.status(429).json({ error: rateLimitError })
 
   const topic = req.body.topic
   if (!validateTopic(topic, res)) return
