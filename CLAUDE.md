@@ -9,14 +9,13 @@ Debate Arena — a React web app that orchestrates real-time debates between thr
 ## Commands
 
 ```bash
-npm run dev        # Vite dev server (http://localhost:5173)
-node server.js     # Express API server (http://localhost:3001)
+vercel dev         # Local dev: serves frontend + /api/* on one port (http://localhost:3000)
+npm run dev        # Vite-only dev server (http://localhost:5173) — /api/* will 404
 npm run build      # Production build → dist/
 npm run lint       # ESLint
-npm start          # Production: serves dist/ + API
 ```
 
-Development requires both the Vite dev server and the Express backend running. Vite proxies `/api/*` to localhost:3001.
+Local development uses the Vercel CLI (`vercel dev`) so the Vite frontend and the serverless functions in `api/` run together. `npm run dev` alone won't serve `/api/*` — there's no Vite proxy and no separate Express backend.
 
 No test suite is configured.
 
@@ -24,7 +23,7 @@ No test suite is configured.
 
 **Frontend**: React 19 + Vite 8, no TypeScript, no state management library. All state lives in App.jsx via hooks.
 
-**Backend**: `server.js` — Express server with multi-provider LLM calls (Anthropic, OpenAI, Google) and in-memory rate limiting. Two endpoints: `POST /api/debate` and `POST /api/verdict`.
+**Backend**: Vercel serverless functions in `api/` — `api/debate.js` and `api/verdict.js`, with shared helpers in `api/_shared.js` (multi-provider LLM calls for Anthropic, OpenAI, Google; origin check; input validation). Endpoints: `POST /api/debate` and `POST /api/verdict`.
 
 **Data flow**: TopicInput → `runDebate()` (src/lib/debate.js) loops rounds×agents → each call hits `/api/debate` → response parsed into claim objects → `buildGraphData()` (src/lib/graphUtils.js) generates nodes/links → DebateGraph renders via D3.
 
@@ -32,7 +31,7 @@ No test suite is configured.
 - `src/lib/agents.js` — Agent config (names, colors, prefixes) + response parsers. Claim IDs follow `{prefix}_r{round}_{index}` pattern (e.g., `adv_r1_1`).
 - `src/lib/debate.js` — Async debate orchestrator with abort support.
 - `src/lib/graphUtils.js` — Graph data builder, scoring (`computeWildcardScore`), round winner logic.
-- `src/components/DebateGraph.jsx` — D3 SVG force graph (800×700 viewbox). Agent anchors: Advocate top-center, Critic bottom-left, Wildcard bottom-right.
+- `src/components/DebateGraph.jsx` — D3 SVG force graph (800×700 viewbox). Agent anchors (forceX/forceY in `agents.js`): Advocate left, Critic right, Wildcard top-center.
 
 **Agent colors**: Green (Advocate), Red (Critic), Purple (Wildcard).
 
@@ -44,4 +43,4 @@ Set in `.env.local`: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`. Op
 
 - JSON parsing in agents.js is lenient — strips markdown code fences and extracts JSON from mixed LLM text.
 - Deployed at `https://debate-arena-ten.vercel.app`. No CORS config needed — API functions are same-origin (Vercel serverless).
-- Rate limiting is in-memory; resets on server restart.
+- Rate limiting is in-memory; resets on server restart. Note: per-instance only on Vercel, so limits aren't globally enforced across serverless invocations.

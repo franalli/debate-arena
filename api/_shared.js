@@ -11,8 +11,8 @@ const MAX_CLAIM_TEXT_LENGTH = 2000
 // ── Origin check ──────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
   'https://debate-arena-ten.vercel.app',
-  'http://localhost:5173',   // local dev
-  'http://localhost:3001'    // local Express
+  'http://localhost:3000',   // vercel dev
+  'http://localhost:5173'    // vite dev (standalone)
 ]
 
 export function checkOrigin(req, res) {
