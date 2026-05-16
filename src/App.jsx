@@ -270,30 +270,16 @@ export default function App() {
           )}
         </div>
 
-        {/* Right: Topic + Fast/Deep + New Debate.
-            overflow:hidden + nowrap buttons (below) guarantee no content
-            can ever push left into the score column. */}
+        {/* Right: voice attribution + Mute + Stop + New Debate.
+            Topic moved out of the header (rendered in its own band below)
+            so it can never clash with the centered score. */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
           gap: '16px',
           minWidth: 0,
-          overflow: 'hidden',
           justifySelf: 'end'
         }}>
-          <span style={{
-            fontSize: '13px',
-            color: '#fff',
-            // Shrinks from a 0 basis so the topic is the first thing
-            // to give up width; the buttons keep their natural sizes.
-            flex: '0 1 350px',
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }}>
-            {topic}
-          </span>
           <a
             href="https://elevenlabs.io"
             target="_blank"
@@ -393,6 +379,40 @@ export default function App() {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Topic band — own row below the header so the centered score
+          can never clash with it. Single line with ellipsis truncation. */}
+      <div style={{
+        padding: '0.5rem 24px',
+        background: 'var(--bg-secondary)',
+        borderBottom: '1px solid var(--border)',
+        fontSize: '13px',
+        color: 'var(--text-secondary)',
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem',
+        overflow: 'hidden'
+      }}>
+        <span style={{
+          textTransform: 'uppercase',
+          letterSpacing: '0.1em',
+          fontSize: '0.7rem',
+          color: 'var(--text-muted)',
+          flexShrink: 0
+        }}>
+          Topic
+        </span>
+        <span style={{
+          color: '#fff',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          minWidth: 0
+        }}>
+          {topic}
+        </span>
       </div>
 
       {/* Error banner */}
