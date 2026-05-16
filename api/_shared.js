@@ -14,7 +14,8 @@ const MAX_CLAIM_TEXT_LENGTH = 2000
 // ── Origin check ──────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
   'https://debate-arena-ten.vercel.app',
-  'http://localhost:3000',   // vercel dev
+  'http://localhost:3000',   // vercel dev default
+  'http://localhost:3002',   // vercel dev alt
   'http://localhost:5173'    // vite dev (standalone)
 ]
 
@@ -302,7 +303,7 @@ export async function callOpenAI(systemPrompt, userMessage, maxTokens) {
 }
 
 export async function callGoogle(systemPrompt, userMessage, maxTokens) {
-  const model = process.env.GOOGLE_MODEL || 'gemini-3-flash-preview'
+  const model = process.env.GOOGLE_MODEL || 'gemini-3.1-pro-preview'
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GOOGLE_API_KEY}`
   const res = await fetch(url, {
     method: 'POST',

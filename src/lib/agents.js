@@ -1,7 +1,7 @@
 export const AGENTS = {
   advocate: {
     name: 'Advocate',
-    model: 'Gemini 3 Flash',
+    model: 'Gemini 3.1 Pro',
     color: '#22c55e',
     dimColor: 'rgba(34, 197, 94, 0.15)',
     prefix: 'adv',

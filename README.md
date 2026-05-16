@@ -8,7 +8,7 @@ Three frontier AI models debate any topic in real time. A visual argument graph 
 
 1. **Enter a topic** — any statement worth arguing about
 2. **Three AI agents debate** across 3 rounds:
-   - 🟢 **Advocate** (Gemini 3 Flash) — argues *for* the statement
+   - 🟢 **Advocate** (Gemini 3.1 Pro) — argues *for* the statement
    - 🔴 **Critic** (GPT-5.5) — argues *against* the statement
    - 🟣 **Wildcard** (Sonnet 4.6) — challenges both sides, then judges each round
 3. **A force-directed graph** builds in real time — nodes are claims, edges show rebuttals and agreements
@@ -105,7 +105,7 @@ GOOGLE_API_KEY=AIza...
 # Optional — model overrides (defaults shown)
 ANTHROPIC_MODEL=claude-sonnet-4-6
 OPENAI_MODEL=gpt-4o
-GOOGLE_MODEL=gemini-3-flash-preview
+GOOGLE_MODEL=gemini-3.1-pro-preview
 
 # Optional — token limits
 FAST_MAX_TOKENS=100
