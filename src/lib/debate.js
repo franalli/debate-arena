@@ -65,8 +65,8 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
         onRoundComplete?.(round)
 
         // Brief pause between rounds so toast is visible before next round starts.
-        // Trimmed from 1000ms to 200ms because eleven_v3's TTFB already injects
-        // a noticeable gap between turns; the extra second feels dead.
+        // Kept short (200ms) because TTS TTFB already injects a natural gap
+        // between turns; an extra second on top tends to feel dead.
         if (round < maxRounds && !abortController.signal.aborted) {
           await new Promise(resolve => setTimeout(resolve, 200))
         }
