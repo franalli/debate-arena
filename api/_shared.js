@@ -14,7 +14,8 @@ const MAX_CLAIM_TEXT_LENGTH = 2000
 // ── Origin check ──────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
   'https://debate-arena-ten.vercel.app',
-  'http://localhost:3000',   // vercel dev
+  'http://localhost:3000',   // vercel dev default
+  'http://localhost:3002',   // vercel dev alt
   'http://localhost:5173'    // vite dev (standalone)
 ]
 
@@ -44,7 +45,7 @@ export function validateTopic(topic, res) {
   return true
 }
 
-const VALID_AGENT_IDS = new Set(['advocate', 'critic', 'wildcard'])
+export const VALID_AGENT_IDS = new Set(['advocate', 'critic', 'wildcard'])
 const AGENT_ORDER = ['advocate', 'critic', 'wildcard']
 
 export function validateHistory(history, round, agent, res) {
@@ -90,6 +91,7 @@ const TTS_CHARS_IP_DAILY        = Number(process.env.TTS_CHARS_IP_DAILY)        
 const TTS_CHARS_GLOBAL_DAILY    = Number(process.env.TTS_CHARS_GLOBAL_DAILY)    || 200_000
 const TTS_MAX_CHARS_PER_REQUEST = Number(process.env.TTS_MAX_CHARS_PER_REQUEST) || 1_000
 const TTS_CACHE_TTL_SECONDS     = Number(process.env.TTS_CACHE_TTL_SECONDS)     || 604_800
+const CACHE_TTL_SECONDS         = Number(process.env.CACHE_TTL_SECONDS)         || 86_400
 
 const DAY_PLUS_BUFFER_SECONDS = 90_000  // 25h — daily keys auto-expire after the day rolls over
 
@@ -209,30 +211,102 @@ export async function checkCharBudget(ip, chars) {
   }
 }
 
-// ── TTS cache (content-addressed by model + voice + text) ────────────────────
-export function ttsCacheKey(text, model, voice) {
-  const hash = createHash('sha256').update(`${model}|${voice}|${text}`).digest('hex')
+// ── TTS cache (content-addressed by model + voice + format + text) ───────────
+// Cache value is the FULL NDJSON response body (audio + alignment), so the
+// karaoke pipeline replays identically from cache as it does from EL live.
+// Format is part of the key because changing mp3 bitrate produces different
+// bytes; voice + model already obvious. Auto-expires after TTS_CACHE_TTL_SECONDS.
+export function ttsCacheKey(text, model, voice, format) {
+  const hash = createHash('sha256').update(`${model}|${voice}|${format}|${text}`).digest('hex')
   return `tts:cache:${hash}`
 }
 
+// Wrapper avoids Upstash auto-deserialization clobbering single-line
+// NDJSON bodies. A one-chunk body is itself valid JSON ('{"…":"…"}\n'),
+// which the SDK would parse into an object on GET — then res.write(obj)
+// stringifies to '[object Object]' and breaks the client. Wrapping in
+// { body } guarantees we always get an object back and read .body.
 export async function getCachedTts(key) {
   const redis = getRedis()
   if (!redis) return null
   try {
-    return await redis.get(key)
+    const v = await redis.get(key)
+    if (!v) return null
+    if (typeof v === 'string') return v
+    if (typeof v === 'object' && typeof v.body === 'string') return v.body
+    return null
   } catch (err) {
     console.error('[tts-cache] get error:', err.message)
     return null
   }
 }
 
-export async function setCachedTts(key, audioBase64) {
+export async function setCachedTts(key, ndjsonBody) {
   const redis = getRedis()
   if (!redis) return
   try {
-    await redis.set(key, audioBase64, { ex: TTS_CACHE_TTL_SECONDS })
+    await redis.set(key, { body: ndjsonBody }, { ex: TTS_CACHE_TTL_SECONDS })
   } catch (err) {
     console.error('[tts-cache] set error:', err.message)
+  }
+}
+
+// Single source of truth for fast/deep mode coercion. Anything that isn't
+// the literal 'deep' falls back to 'fast' — matches /api/debate's behavior.
+export function normalizeMode(m) {
+  return m === 'deep' ? 'deep' : 'fast'
+}
+
+// ── Debate cache (text only — claims + verdict) ──────────────────────────────
+// Keyed by every input that affects the LLM output: topic (normalized),
+// mode, all three model IDs, both token caps. Voice/TTS settings are NOT
+// in this key — they only affect audio and are covered by the TTS cache.
+// Topic is trimmed + lowercased so trivial casing/whitespace differences
+// hit the same cache entry; the LLM doesn't care, the cache shouldn't either.
+export function debateCacheKey(topic, mode) {
+  const inputs = JSON.stringify({
+    topic: String(topic).trim().toLowerCase(),
+    mode: normalizeMode(mode),
+    anthropic: process.env.ANTHROPIC_MODEL || '',
+    openai: process.env.OPENAI_MODEL || '',
+    google: process.env.GOOGLE_MODEL || '',
+    fast: process.env.FAST_MAX_TOKENS || '',
+    deep: process.env.DEEP_MAX_TOKENS || ''
+  })
+  const hash = createHash('sha256').update(inputs).digest('hex')
+  return `debate:cache:${hash}`
+}
+
+// Upstash SDK auto-serializes objects on SET and auto-deserializes on GET,
+// so we round-trip naturally without manual JSON.stringify.
+export async function getCachedDebate(key) {
+  const redis = getRedis()
+  if (!redis) return null
+  try {
+    return (await redis.get(key)) || null
+  } catch (err) {
+    console.error('[debate-cache] get error:', err.message)
+    return null
+  }
+}
+
+export async function setCachedDebate(key, debate) {
+  const redis = getRedis()
+  if (!redis) return
+  try {
+    await redis.set(key, debate, { ex: CACHE_TTL_SECONDS })
+  } catch (err) {
+    console.error('[debate-cache] set error:', err.message)
+  }
+}
+
+export async function deleteCachedDebate(key) {
+  const redis = getRedis()
+  if (!redis) return
+  try {
+    await redis.del(key)
+  } catch (err) {
+    console.error('[debate-cache] del error:', err.message)
   }
 }
 
@@ -285,6 +359,10 @@ export async function callOpenAI(systemPrompt, userMessage, maxTokens) {
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-4o',
       max_completion_tokens: maxTokens || 500,
+      // 'low' matches Gemini's thinkingLevel='low' — minimal reasoning, keeps
+      // compute parity for the debate "fair fight." Valid values for gpt-5.5:
+      // 'none' | 'low' | 'medium' | 'high' | 'xhigh'. Chat-only models ignore it.
+      reasoning_effort: 'low',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage }
@@ -302,7 +380,7 @@ export async function callOpenAI(systemPrompt, userMessage, maxTokens) {
 }
 
 export async function callGoogle(systemPrompt, userMessage, maxTokens) {
-  const model = process.env.GOOGLE_MODEL || 'gemini-3-flash-preview'
+  const model = process.env.GOOGLE_MODEL || 'gemini-3.1-pro-preview'
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GOOGLE_API_KEY}`
   const res = await fetch(url, {
     method: 'POST',
@@ -312,7 +390,9 @@ export async function callGoogle(systemPrompt, userMessage, maxTokens) {
       contents: [{ parts: [{ text: userMessage }] }],
       generationConfig: {
         maxOutputTokens: maxTokens || 500,
-        thinkingConfig: { thinkingBudget: 0 }
+        // Gemini 3.x uses thinkingLevel ('low' | 'medium' | 'high').
+        // 'low' minimizes latency — matches our snappy-debate pacing.
+        thinkingConfig: { thinkingLevel: 'low' }
       }
     })
   })

@@ -1,4 +1,4 @@
-import { AGENTS } from './agents.js'
+import { AGENTS, PREFIX_TO_AGENT } from './agents.js'
 
 export function buildGraphData(claims) {
   // Count rebuttals received per claim
@@ -71,9 +71,8 @@ export function computeWildcardScore(claims) {
 
     // Fallback: infer side from the claim ID prefix (e.g. "adv_r1_1" → advocate)
     if (!target) {
-      const id = c.agrees_with
-      if (id.startsWith('adv')) target = { agentId: 'advocate' }
-      else if (id.startsWith('crt')) target = { agentId: 'critic' }
+      const agentFromPrefix = PREFIX_TO_AGENT[c.agrees_with.slice(0, 3)]
+      if (agentFromPrefix) target = { agentId: agentFromPrefix }
     }
 
     if (target && (target.agentId === 'advocate' || target.agentId === 'critic')) {

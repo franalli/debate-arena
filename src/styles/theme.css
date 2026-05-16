@@ -94,3 +94,61 @@ input {
   100% { background-position: 200% 50%; }
 }
 
+/* Subtle topographic backdrop drift — different X/Y periods so the
+   motion never traces a straight line. Pure background-position
+   animation: GPU-cheap, no layout, no repaint of the SVG itself. */
+@keyframes topo-drift {
+  0%   { background-position:   0px   0px; }
+  25%  { background-position:  60px  35px; }
+  50%  { background-position:  30px  80px; }
+  75%  { background-position: -40px  45px; }
+  100% { background-position:   0px   0px; }
+}
+
+.topo-backdrop {
+  animation: topo-drift 90s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topo-backdrop { animation: none; }
+}
+
+/* ── TTS speaker pulse rings (used by DebateGraph) ───────────── */
+@keyframes speaker-pulse {
+  from { transform: scale(1);   opacity: 0.8; }
+  to   { transform: scale(2.6); opacity: 0;   }
+}
+
+.speaker-ring {
+  animation: speaker-pulse 1.6s ease-out infinite;
+  transform-origin: center center;
+  transform-box: fill-box;
+}
+
+.speaker-ring-2 { animation-delay: 0.55s; }
+.speaker-ring-3 { animation-delay: 1.10s; }
+
+/* ── Karaoke word highlight (used by Transcript) ──────────────
+   Default: claim text reads at normal brightness. While being
+   spoken, unspoken words dim back, the active word pops bright,
+   and spoken words stay at the default. Transition softens the
+   per-word edge so it doesn't feel like a flashing cursor. */
+.karaoke-word {
+  color: var(--text-muted);
+  transition: color 0.18s ease-out, font-weight 0.18s ease-out;
+}
+.karaoke-word.active {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.karaoke-word.past {
+  color: var(--text-primary);
+}
+
+/* Brand gradients used in multiple buttons / titles. Promoted to
+   variables so the color order is defined once. */
+:root {
+  --shimmer-gradient: linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate));
+  --title-gradient: linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic));
+}
+

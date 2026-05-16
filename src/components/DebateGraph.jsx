@@ -33,7 +33,7 @@ const ANCHOR = {
   wildcard: LAYOUT.wildcard.anchor
 }
 
-export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, selectedNode, status, claims }) {
+export default function DebateGraph({ graphData, thinkingAgent, speakingAgent, onNodeClick, selectedNode, status, claims }) {
   const svgRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
   const containerRef = useRef(null)
@@ -431,6 +431,40 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
     }
   }, [thinkingAgent])
 
+  // Speaker rings — emanate from the active speaker's anchor.
+  // Lives in its own effect to avoid triggering the main re-render on every audio start/end.
+  useEffect(() => {
+    const svg = select(svgRef.current)
+    svg.select('.speaker-rings').remove()
+
+    if (!speakingAgent || !LAYOUT[speakingAgent]) return
+
+    const anchor = LAYOUT[speakingAgent].anchor
+    const color = AGENTS[speakingAgent].color
+    const ANCHOR_RADIUS = 40
+
+    const anchorGroupExists = !svg.select('.agent-anchors').empty()
+    const ringsGroup = anchorGroupExists
+      ? svg.insert('g', '.agent-anchors').attr('class', 'speaker-rings')
+      : svg.append('g').attr('class', 'speaker-rings')
+
+    ringsGroup
+      .attr('transform', `translate(${anchor.x},${anchor.y})`)
+      .attr('pointer-events', 'none')
+
+    for (let i = 0; i < 3; i++) {
+      ringsGroup.append('circle')
+        .attr('r', ANCHOR_RADIUS)
+        .attr('fill', 'none')
+        .attr('stroke', color)
+        .attr('stroke-width', 2)
+        .attr('class', `speaker-ring speaker-ring-${i + 1}`)
+    }
+
+    return () => { svg.select('.speaker-rings').remove() }
+  // selectedNode: main effect wipes the SVG when it changes; re-fire here so rings reappear.
+  }, [speakingAgent, graphData, selectedNode])
+
   return (
     <div ref={containerRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
       <svg
@@ -503,28 +537,30 @@ function Legend() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: '1.5rem',
+      flexWrap: 'wrap',
+      columnGap: '1.2rem',
+      rowGap: '0.35rem',
       background: 'var(--bg-secondary)',
       borderTop: '1px solid var(--border)',
-      padding: '0.5rem 1.2rem',
-      fontSize: '0.9rem',
+      padding: '0.5rem 0.8rem',
+      fontSize: '0.85rem',
       flexShrink: 0
     }}>
       {AGENT_ORDER.map(id => (
-        <span key={id} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+        <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', whiteSpace: 'nowrap' }}>
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: AGENTS[id].color, display: 'inline-block' }} />
           <span style={{ color: AGENTS[id].color, fontWeight: 600 }}>{AGENTS[id].name}</span>
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>({AGENTS[id].model})</span>
+          <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>({AGENTS[id].model})</span>
         </span>
       ))}
-      <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#ffffff' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: '#ffffff', whiteSpace: 'nowrap' }}>
         <svg width="32" height="12" style={{ display: 'block' }}>
           <line x1="0" y1="6" x2="22" y2="6" stroke="currentColor" strokeWidth="2" strokeDasharray="4 3" />
           <polygon points="22,2 30,6 22,10" fill="currentColor" />
         </svg>
         <span>attacks</span>
       </span>
-      <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', whiteSpace: 'nowrap' }}>
         <span style={{ width: 24, height: 0, borderTop: '3px solid #22c55e', display: 'inline-block' }} />
         <span style={{ color: '#22c55e', fontWeight: 600 }}>agrees</span>
       </span>

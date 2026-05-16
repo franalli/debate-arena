@@ -1,11 +1,11 @@
-import { formatHistory, callAnthropic, callOpenAI, callGoogle, CLAIM_ID_RE, checkOrigin, validateTopic, validateHistory, checkRateLimit, getIp } from './_shared.js'
+import { formatHistory, callAnthropic, callOpenAI, callGoogle, CLAIM_ID_RE, checkOrigin, validateTopic, validateHistory, checkRateLimit, getIp, VALID_AGENT_IDS, normalizeMode } from './_shared.js'
 
 // ── Mode configs ─────────────────────────────────────────────
 const MODES = {
   fast: {
     maxRounds: 3,
     maxTokens: Number(process.env.FAST_MAX_TOKENS) || 100,
-    style: `CRITICAL: Respond with exactly ONE claim. Maximum 12 words. Newspaper headline style. Always end with a full stop.`
+    style: `CRITICAL: Respond with exactly ONE claim. Maximum 24 words. Newspaper headline style. Always end with a full stop.`
   },
   deep: {
     maxRounds: 3,
@@ -91,10 +91,10 @@ export default async function handler(req, res) {
 
   const topic = req.body.topic
   if (!validateTopic(topic, res)) return
-  const mode = req.body.mode === 'deep' ? 'deep' : 'fast'
+  const mode = normalizeMode(req.body.mode)
   const cfg = MODES[mode]
 
-  if (!['advocate', 'critic', 'wildcard'].includes(agent)) return res.status(400).json({ error: 'Invalid agent' })
+  if (!VALID_AGENT_IDS.has(agent)) return res.status(400).json({ error: 'Invalid agent' })
   if (!Number.isInteger(round) || round < 1 || round > cfg.maxRounds) return res.status(400).json({ error: 'Invalid round' })
   if (!validateHistory(history, round, agent, res)) return
 
