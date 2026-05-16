@@ -13,8 +13,9 @@ Three frontier AI models debate any topic in real time. A live D3 argument graph
    - 🟣 **Wildcard** (Claude Sonnet 4.6) — challenges both sides, then judges each round.
 3. **A force-directed graph** builds in real time — nodes are claims, edges show the Wildcard's rebuttals and agreements (Advocate↔Critic attacks are omitted as predictable).
 4. **Each claim is spoken** via ElevenLabs (streamed, mute + abort, **word-level karaoke** in the transcript).
-5. **The Wildcard delivers a verdict** — strongest arguments and the loser's biggest gap.
+5. **The Wildcard delivers a verdict** — strongest arguments and the loser's biggest gap, also spoken with per-word karaoke and a "is reading debate verdict" indicator.
 6. **Already-debated topics replay instantly** from cache — same audio, same graph, same karaoke; no LLM or TTS calls.
+7. **Aborted debates retain their work**: per-call LLM responses and per-claim TTS audio are independently cached, so partial runs aren't wasted.
 
 Two debate modes:
 - **Fast** — 24-word headline-style claims, ~100 tokens per turn.
@@ -62,15 +63,18 @@ The Wildcard pulls double duty: each round it picks one claim to rebut and one (
 │                           textToSpeech.streamWithTimestamps()        │
 │                           ⇢ NDJSON {audioBase64, alignment} + tee    │
 │  api/debate-cache.js   ─► GET (lookup) / POST (write, validated)     │
-│  api/_shared.js        ─► LLM clients, validation, KV rate limits,   │
-│                           TTS budget, two-layer cache helpers        │
+│  api/_shared.js        ─► LLM clients (per-call cache), validation,  │
+│                           KV rate limits, TTS budget, cache factory  │
+│  api/_prompts.js       ─► system prompts + sampling settings +       │
+│                           BEHAVIOR_HASH (content-addressed cache key)│
 └──────┬───────────────────────────────────────────────────────────────┘
        │  Upstash Redis (Vercel Marketplace)
        ▼
   Daily counters: debates (per-IP, global), TTS chars (per-IP, global)
   Locks:          per-IP debate cooldown
-  Cache layer 1:  debate text — claims + verdict (24h TTL)
-  Cache layer 2:  TTS audio   — NDJSON body per (model,voice,format,text) (7d TTL)
+  Cache layer 1:  debate text   — full claims + verdict          (30d TTL)
+  Cache layer 2:  LLM responses — per-call raw text              (30d TTL)
+  Cache layer 3:  TTS audio     — NDJSON body per voice/settings (30d TTL)
 ```
 
 ### Data Flow
@@ -80,9 +84,9 @@ The Wildcard pulls double duty: each round it picks one claim to rebut and one (
 3. **Cache miss** → loop rounds × agents: `callAgent()` → `POST /api/debate` with `{ topic, history, round, agent, mode }`.
 4. Server picks the LLM provider per the routing table and returns the raw JSON string.
 5. Client parses it into a structured claim `{ id, text, rebuts, agrees_with }`; `buildGraphData()` regenerates D3 nodes + links.
-6. `runDebate()` then `await`s `playAudioStream()` — `POST /api/tts` returns NDJSON (each line = `{ audioBase64, alignment }`). Audio bytes feed `MediaSource`; alignment data drives word-level highlighting in the transcript.
-7. After 3 rounds → `POST /api/verdict` → Wildcard summarizes; the verdict is also spoken.
-8. On clean completion (verdict + all 9 claims) → `POST /api/debate-cache` writes the debate for next viewer (24h TTL, `keepalive: true` so a same-tab nav doesn't kill it).
+6. `runDebate()` then starts `playAudioStream()` and **simultaneously pre-fetches the next agent's LLM call** — the next claim is usually ready by the time the current audio finishes, making transitions near-instant. `POST /api/tts` returns NDJSON (each line = `{ audioBase64, alignment }`). Audio bytes feed `MediaSource`; alignment data drives word-level highlighting in the transcript.
+7. After 3 rounds → `POST /api/verdict` (pre-fetched during the last wildcard's TTS) → Wildcard summarizes; the verdict is spoken with per-word karaoke and a "Wildcard is reading debate verdict" indicator.
+8. On clean completion (verdict + all 9 claims) → `POST /api/debate-cache` writes the debate for next viewer (`keepalive: true` so a same-tab nav doesn't kill it).
 
 ### Claim ID Format
 
@@ -174,7 +178,9 @@ playAudioStream(text, { agent, signal, getMuted, fresh,
 ### Orchestration & Lifecycle (`src/lib/debate.js`, `src/App.jsx`)
 
 - **Two-path orchestrator.** `runDebate()` always checks the debate-text cache first. Hits trigger `replayCached()` which dispatches the same callback sequence the live path would; the UI doesn't know which it's watching. Misses run the live loop and write to cache on clean completion only.
-- **Serialization.** `audio.js` uses module-level singletons (`currentAudio`, `currentResolve`). The orchestrator must `await` each `playAudioStream()` call before issuing the next; a concurrent caller would orphan the previous promise.
+- **Pipelined live path.** Each agent's LLM call is **pre-fetched while the previous agent's TTS is playing** — `pendingLlm` runs in parallel with `pendingTts`. The "thinking" indicator stays gated on audio transitions, so the pre-fetch is invisible: when audio ends, the next claim is usually already there (instant). Same pre-fetch applies across rounds and to the final verdict (kicked off during the last wildcard's TTS).
+- **Serialization.** `audio.js` uses module-level singletons (`currentAudio`, `currentResolve`). The orchestrator awaits each `playAudioStream()` before issuing the next; a concurrent caller would orphan the previous promise. (Pipelining doesn't violate this — only the LLM calls overlap with TTS, never two TTS streams.)
+- **Verdict karaoke.** The verdict TTS uses a synthetic `__verdict__` claim ID so per-word alignment data flows through the same `onSpeakingWords` → `claimWords` → `KaraokeText` pipeline as regular claims. The transcript shows a "is reading debate verdict" indicator plus the full verdict text karaoke-highlighted as the wildcard speaks.
 - **Priming.** On topic submit, `TopicInput` fires two warmups:
   - `primeAudio()` plays a silent MP3 inside the click handler so the browser's autoplay policy is unlocked for the rest of the session.
   - `primeTTS()` sends a fire-and-forget **HEAD** request to `/api/tts` (which returns 204) — pre-warms DNS/TCP/TLS and the cold-start function instance **without** triggering an ElevenLabs generation. (An earlier version POSTed a `.` and billed an EL call per debate start; HEAD removed that cost.)
@@ -185,7 +191,7 @@ playAudioStream(text, { agent, signal, getMuted, fresh,
 
 ## Caching
 
-Two independent layers, both Upstash Redis, both content-addressed, both with `?fresh=1` bypass.
+Three independent layers, all Upstash Redis, all content-addressed via the shared `makeCacheStore` factory in `api/_shared.js`, all with `?fresh=1` bypass on the read path. **Keys do the invalidation work, TTL is just a storage backstop** — any input change naturally produces a new key, so the 30-day defaults can stay long without serving stale content.
 
 ### Layer 1 — Debate text (`/api/debate-cache`)
 
@@ -194,23 +200,42 @@ GET  /api/debate-cache?topic=…&mode=…[&fresh=1]   → { cached, debate? }
 POST /api/debate-cache  { topic, mode, claims, verdict }   → { stored: true }
 ```
 
-- **Key**: `sha256(JSON.stringify({ topic.trim().toLowerCase(), mode, anthropic_model, openai_model, google_model, fast_tokens, deep_tokens }))`. Any model or token-cap env change naturally invalidates.
-- **TTL**: `CACHE_TTL_SECONDS` (default 86,400 = 24h).
-- **Write guard**: the client only POSTs on full completion (no abort, no agent errors, all 9 claims present, verdict present). Prevents broken-state debates from haunting the cache for 24h.
+- **Key**: `sha256(JSON.stringify({ topic.trim().toLowerCase(), mode, anthropic_model, openai_model, google_model, fast_tokens, deep_tokens, behavior_hash }))`. Any model, token-cap, or **prompt/sampling-setting edit** (via `BEHAVIOR_HASH` in `_prompts.js`) naturally invalidates.
+- **TTL**: `CACHE_TTL_SECONDS` (default 2,592,000 = 30d).
+- **Write guard**: the client only POSTs on full completion (no abort, no agent errors, all 9 claims present, verdict present). Prevents broken-state debates from haunting the cache.
 - **Write validation**: the POST handler revalidates `topic`, claim shapes, claim IDs, agent IDs, and verdict shape — origin headers are forgeable from non-browser clients, so the cache can't be poisoned by a malicious POST.
-- **Topic normalization**: `topic.trim().toLowerCase()` in the key so "Pineapple belongs on pizza" and "  pineapple belongs on pizza " hit the same entry. LLMs don't care about case/whitespace; the cache shouldn't either.
+- **Topic normalization**: `topic.trim().toLowerCase()` in the key so "Pineapple belongs on pizza" and "  pineapple belongs on pizza " hit the same entry.
+- **`?fresh=1` proactively deletes** the existing entry so an aborted regen doesn't leave the stale one behind.
 
-### Layer 2 — TTS audio (in `/api/tts`)
+### Layer 2 — LLM responses (in `callAnthropic` / `callOpenAI` / `callGoogle`)
 
-- **Key**: `sha256(model | voice | format | text)`. Format is in the key because different mp3 bitrates produce different bytes; voice+model are obvious.
+- **Key**: `sha256(JSON.stringify({ behavior, provider, model, maxTokens, systemPrompt, userMessage }))`. Identical inputs → cache hit → skip the LLM call entirely.
+- **Value**: the raw response text the provider returned.
+- **TTL**: `CACHE_TTL_SECONDS` (default 30d).
+- **Why this matters**: aborted debates retain their per-claim text — partial work isn't wasted. The Layer 1 (full-debate) cache only writes on clean completion; Layer 2 catches every individual successful LLM call.
+- **Coverage**: applied uniformly across all three providers and the verdict path. `BEHAVIOR_HASH` is folded into every key so any prompt or sampling-setting edit invalidates symmetrically.
+
+### Layer 3 — TTS audio (in `/api/tts`)
+
+- **Key**: `sha256(model | voice | format | voice_settings_json | text)`. Voice settings (stability/style/speed) are in the key so tweaks to `VOICE_MAP` auto-invalidate without manual cache wipes.
 - **Value**: the full NDJSON body (audio + alignment), so the karaoke pipeline replays identically from cache as from a live EL stream.
-- **TTL**: `TTS_CACHE_TTL_SECONDS` (default 604,800 = 7d).
+- **TTL**: `TTS_CACHE_TTL_SECONDS` (default 2,592,000 = 30d).
 - **Cache hits skip the char budget** — replays cost the user nothing and don't consume EL quota.
-- **`?fresh=1`** on the request URL skips the read but still writes (re-warms the cache entry).
+- **`?fresh=1`** on the request URL proactively deletes the entry (mirrors Layer 1) so an aborted regen doesn't leave the stale one behind.
+
+### Maintenance scripts
+
+```bash
+node scripts/cache-status.js              # read-only inspection — count + sample of each layer
+node scripts/wipe-cache.js --dry-run      # list keys that would be deleted (all three layers)
+node scripts/wipe-cache.js                # actually delete them (rate-limit counters preserved)
+```
+
+Both share `scripts/_redis.js` (env loader + client + `scanAll` + `CACHE_PATTERNS`).
 
 ### Storage wrapper note
 
-`setCachedTts` wraps NDJSON in `{ body }` because Upstash's REST SDK auto-deserializes — a single-chunk NDJSON body is itself valid JSON, which `redis.get` would parse into an object, then `res.write(obj)` would stringify back as `[object Object]` and break the client. Wrapping guarantees a `.body` string round-trip.
+The cache factory's `wrap`/`unwrap` indirection exists because Upstash's REST SDK auto-deserializes JSON. A single-chunk TTS NDJSON body is itself valid JSON, which `redis.get` would parse into an object, then `res.write(obj)` would stringify back as `[object Object]` and break the client. Wrapping in `{ body }` guarantees a string round-trip; LLM cache wraps in `{ text }` for the same reason; debate cache stores objects directly.
 
 ## Key Files
 
@@ -233,8 +258,12 @@ POST /api/debate-cache  { topic, mode, claims, verdict }   → { stored: true }
 | `api/debate.js` | Debate endpoint — routes agent → provider, builds system prompts |
 | `api/verdict.js` | Verdict endpoint — Wildcard final judgment |
 | `api/tts.js` | TTS endpoint — cache-check, NDJSON stream + tee, sync cache-write |
-| `api/debate-cache.js` | Debate text cache — GET (lookup), POST (validated write) |
-| `api/_shared.js` | LLM clients, origin check, validation, KV rate-limit + TTS-budget + two-layer cache helpers |
+| `api/debate-cache.js` | Debate text cache — GET (lookup), POST (validated write), `?fresh=1` proactive delete |
+| `api/_shared.js` | LLM clients (per-call cached), origin check, validation, KV rate-limit + TTS-budget + `makeCacheStore` factory |
+| `api/_prompts.js` | All system prompts, mode styles, sampling settings + `BEHAVIOR_HASH` content fingerprint |
+| `scripts/_redis.js` | Shared Upstash client + `scanAll` + `CACHE_PATTERNS` for maintenance scripts |
+| `scripts/cache-status.js` | Read-only inspection of the three cache layers |
+| `scripts/wipe-cache.js` | Delete all entries in the three cache namespaces (preserves rate-limit counters) |
 | `scripts/generate-contours.ts` | Pre-build art generator — FBM-noise topographic contour SVG (run via `npm run contours`) |
 
 ## Getting Started
@@ -296,8 +325,9 @@ TTS_CHARS_IP_DAILY=20000        # per-IP daily char ceiling
 TTS_CHARS_GLOBAL_DAILY=200000   # global daily char ceiling
 
 # ── Cache TTLs (optional) ────────────────────────────
-CACHE_TTL_SECONDS=86400         # debate text cache (24h)
-TTS_CACHE_TTL_SECONDS=604800    # TTS audio cache (7d)
+# Keys do invalidation work; TTL is just a storage floor.
+CACHE_TTL_SECONDS=2592000       # debate text + LLM response cache (30d)
+TTS_CACHE_TTL_SECONDS=2592000   # TTS audio cache (30d)
 ```
 
 ### Development
@@ -340,8 +370,8 @@ All limits live in Upstash Redis so they're shared across serverless invocations
 | Per-request TTS chars | 1,000 | `TTS_MAX_CHARS_PER_REQUEST` |
 | Per-IP daily TTS chars | 20,000 | `TTS_CHARS_IP_DAILY` |
 | Global daily TTS chars | 200,000 | `TTS_CHARS_GLOBAL_DAILY` |
-| Debate text cache TTL | 24h | `CACHE_TTL_SECONDS` |
-| TTS audio cache TTL | 7d | `TTS_CACHE_TTL_SECONDS` |
+| Debate text + LLM cache TTL | 30d | `CACHE_TTL_SECONDS` |
+| TTS audio cache TTL | 30d | `TTS_CACHE_TTL_SECONDS` |
 
 The cooldown is implemented as `SET NX EX` on `rl:cd:<ip>` — only the *first* call of a new debate (round 1, advocate) acquires it; subsequent agent calls within the same debate skip the lock. Daily counters auto-expire 25h after creation so a slow day naturally rolls over.
 
@@ -358,7 +388,7 @@ The API includes several hardening measures:
 - **Origin check** — rejects requests from anything not in the `ALLOWED_ORIGINS` list (prod URL + localhost dev ports).
 - **Input size caps** — topic ≤ 500 chars, claim text ≤ 2,000 chars, TTS text ≤ 1,000 chars per request.
 - **Structural history validation** — claim IDs must match `^[a-z]{3}_r\d{1,2}_\d{1,2}$`, agent IDs are whitelisted, and the array length must not exceed what's expected at `(round, agent)`.
-- **Cache POST validation** — `/api/debate-cache` POST revalidates topic + every claim's shape + verdict shape before writing. Origin headers are forgeable from non-browser clients; without this, an attacker could poison the cache with fabricated content keyed to a popular topic for 24h.
+- **Cache POST validation** — `/api/debate-cache` POST revalidates topic + every claim's shape + verdict shape before writing. Origin headers are forgeable from non-browser clients; without this, an attacker could poison the cache with fabricated content keyed to a popular topic for the full 30-day TTL.
 - **Prompt armoring** — system prompts instruct each model to treat the topic as a subject to debate, not an instruction to follow.
 - **Generic error messages** — provider details are logged server-side only; clients always get `"Service temporarily unavailable"`.
 
@@ -368,7 +398,7 @@ The API includes several hardening measures:
 - **Backend:** Vercel Serverless Functions (Node.js).
 - **LLM Providers:** Anthropic (Claude, default reasoning), OpenAI (GPT, `reasoning_effort: low`), Google (Gemini, `thinkingLevel: low`).
 - **TTS:** ElevenLabs (`@elevenlabs/elevenlabs-js`), `streamWithTimestamps` over NDJSON; MP3 chunks fed to MediaSource on the client, word-level alignment drives karaoke.
-- **Storage / Cache:** Upstash Redis (Vercel Marketplace) — rate limits, TTS char budgets, two-layer content-addressed cache (debate text 24h, TTS audio 7d).
+- **Storage / Cache:** Upstash Redis (Vercel Marketplace) — rate limits, TTS char budgets, three-layer content-addressed cache (debate text + per-call LLM + TTS audio, all 30d, all fingerprinted by `BEHAVIOR_HASH`).
 - **Build assets:** topographic contour SVG generated at design time by `scripts/generate-contours.ts` (FBM noise + marching squares).
 - **Styling:** CSS custom properties, dark theme, no CSS framework.
 - **No TypeScript (except the build-time script), no state management library, no database.**

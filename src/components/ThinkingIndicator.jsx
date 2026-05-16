@@ -1,6 +1,6 @@
 import { AGENTS } from '../lib/agents.js'
 
-export default function ThinkingIndicator({ agentId }) {
+export default function ThinkingIndicator({ agentId, label = 'is thinking' }) {
   if (!agentId) return null
   const agent = AGENTS[agentId]
 
@@ -21,7 +21,7 @@ export default function ThinkingIndicator({ agentId }) {
         ({agent.model})
       </span>
       <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-        is thinking
+        {label}
       </span>
       <span style={{ display: 'flex', gap: '4px' }}>
         {[0, 1, 2].map(i => (
