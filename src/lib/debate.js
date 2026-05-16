@@ -20,11 +20,14 @@ async function fetchCachedDebate(topic, mode, signal) {
   } catch { return null }
 }
 
-// Fire-and-forget cache write after a successful live debate.
+// Fire-and-forget cache write after a successful live debate. keepalive:
+// true survives a same-tab navigation (user clicking "new debate" right
+// after onComplete), which otherwise cancels the in-flight request.
 function persistDebateCache(topic, mode, claims, verdict) {
   fetch('/api/debate-cache', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
+    keepalive: true,
     body: JSON.stringify({ topic, mode, claims, verdict })
   }).catch(() => {})
 }
@@ -70,7 +73,6 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
       for (const c of inRound) {
         if (abortController.signal.aborted) return
         onAgentStart?.(c.agentId, round)
-        allClaims.push(c)
         onAgentComplete?.(c.agentId, round, [c])
         await speakClaim(c.agentId, c.id, c.text)
       }
@@ -79,11 +81,16 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
         await new Promise(resolve => setTimeout(resolve, 200))
       }
     }
-    if (!abortController.signal.aborted && cached.verdict) {
+    if (!abortController.signal.aborted) {
+      // Fire onVerdictStart unconditionally to match the live path's UI
+      // contract — the loading state should appear even if (somehow) the
+      // cached debate has no verdict, so the UI doesn't get stuck.
       onVerdictStart?.()
-      onVerdict?.(cached.verdict)
-      if (!abortController.signal.aborted) {
-        await speakClaim('wildcard', null, buildVerdictTtsString(cached.verdict))
+      if (cached.verdict) {
+        onVerdict?.(cached.verdict)
+        if (!abortController.signal.aborted) {
+          await speakClaim('wildcard', null, buildVerdictTtsString(cached.verdict))
+        }
       }
     }
     onComplete?.()
@@ -119,6 +126,8 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
             allClaims.push(...newClaims)
             onAgentComplete?.(agentId, round, newClaims)
 
+            // Each round has exactly one claim per agent (parser enforces).
+            // Use that claim's id as the speakingClaimId so the UI can match it.
             const speakingId = newClaims[0]?.id
             const textToSpeak = newClaims.map(c => c.text).join(' ')
             await speakClaim(agentId, speakingId, textToSpeak)
@@ -130,6 +139,9 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
 
         onRoundComplete?.(round)
 
+        // Brief pause between rounds so toast is visible before next round starts.
+        // Kept short (200ms) because TTS TTFB already injects a natural gap
+        // between turns; an extra second on top tends to feel dead.
         if (round < maxRounds && !abortController.signal.aborted) {
           await new Promise(resolve => setTimeout(resolve, 200))
         }
@@ -152,9 +164,14 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
         }
       }
 
-      // Persist on full completion only — partial debates would bake in
-      // aborted/error states and surface them to every later viewer.
-      if (!abortController.signal.aborted && allClaims.length > 0) {
+      // Persist on full completion only — partial debates (abort, agent
+      // error, verdict throw) would bake in broken states and surface them
+      // to every later viewer for 24h. Require a verdict + all 9 claims.
+      if (
+        !abortController.signal.aborted &&
+        allClaims.length === maxRounds * AGENT_ORDER.length &&
+        finalVerdict
+      ) {
         persistDebateCache(topic, mode, allClaims, finalVerdict)
       }
 

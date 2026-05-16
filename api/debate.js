@@ -1,4 +1,4 @@
-import { formatHistory, callAnthropic, callOpenAI, callGoogle, CLAIM_ID_RE, checkOrigin, validateTopic, validateHistory, checkRateLimit, getIp, VALID_AGENT_IDS } from './_shared.js'
+import { formatHistory, callAnthropic, callOpenAI, callGoogle, CLAIM_ID_RE, checkOrigin, validateTopic, validateHistory, checkRateLimit, getIp, VALID_AGENT_IDS, normalizeMode } from './_shared.js'
 
 // ── Mode configs ─────────────────────────────────────────────
 const MODES = {
@@ -91,7 +91,7 @@ export default async function handler(req, res) {
 
   const topic = req.body.topic
   if (!validateTopic(topic, res)) return
-  const mode = req.body.mode === 'deep' ? 'deep' : 'fast'
+  const mode = normalizeMode(req.body.mode)
   const cfg = MODES[mode]
 
   if (!VALID_AGENT_IDS.has(agent)) return res.status(400).json({ error: 'Invalid agent' })
