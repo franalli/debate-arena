@@ -31,6 +31,8 @@ function getVoiceId(agent) {
 }
 
 export default async function handler(req, res) {
+  // HEAD: cheap connection warmup (primeTTS on Start click). 204 = no body.
+  if (req.method === 'HEAD') return res.status(204).end()
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   if (!checkOrigin(req, res)) return
 
