@@ -1,5 +1,13 @@
 import { useState } from 'react'
 import { primeAudio, primeTTS } from '../lib/audio.js'
+import { GoogleLogo, OpenAILogo, AnthropicLogo, ElevenLabsLogo } from './ProviderLogos.jsx'
+
+const POWERED_BY = [
+  { name: 'Anthropic',  url: 'https://www.anthropic.com',   Logo: AnthropicLogo },
+  { name: 'OpenAI',     url: 'https://openai.com',          Logo: OpenAILogo },
+  { name: 'Gemini',     url: 'https://deepmind.google/technologies/gemini', Logo: GoogleLogo },
+  { name: 'ElevenLabs', url: 'https://elevenlabs.io',       Logo: ElevenLabsLogo }
+]
 
 const SUGGESTIONS = [
   ['AI will replace most software engineers within 5 years', 'Space colonization should be humanity\'s top priority'],
@@ -67,11 +75,18 @@ export default function TopicInput({ onStart }) {
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      justifyContent: 'center',
       minHeight: '100vh',
-      padding: '2rem',
-      gap: '2rem'
+      padding: '2rem'
     }}>
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '2rem',
+        width: '100%'
+      }}>
       <div style={{ textAlign: 'center' }}>
         <h1 style={{
           fontSize: '2.5rem',
@@ -179,6 +194,55 @@ export default function TopicInput({ onStart }) {
             ))}
           </div>
         ))}
+      </div>
+      </div>
+
+      <div style={{
+        paddingTop: '2rem',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '0.75rem'
+      }}>
+        <span style={{
+          fontSize: '0.7rem',
+          color: 'var(--text-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.15em'
+        }}>
+          Powered by
+        </span>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '1.75rem',
+          flexWrap: 'wrap',
+          justifyContent: 'center'
+        }}>
+          {POWERED_BY.map((item) => (
+            <a
+              key={item.name}
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                color: 'var(--text-secondary)',
+                textDecoration: 'none',
+                fontSize: '0.85rem',
+                opacity: 0.7,
+                transition: 'opacity var(--transition)'
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7' }}
+            >
+              <item.Logo size={18} />
+              <span>{item.name}</span>
+            </a>
+          ))}
+        </div>
       </div>
     </div>
   )
