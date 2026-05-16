@@ -282,6 +282,25 @@ export default function App() {
           }}>
             {topic}
           </span>
+          <a
+            href="https://elevenlabs.io"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Voice powered by ElevenLabs eleven_v3 model"
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-muted)',
+              textDecoration: 'none',
+              whiteSpace: 'nowrap',
+              opacity: 0.7,
+              transition: 'opacity var(--transition)',
+              letterSpacing: '0.02em'
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7' }}
+          >
+            Voice by ElevenLabs · eleven_v3
+          </a>
           <button
             onClick={() => setMuted(m => !m)}
             aria-label={muted ? 'Unmute' : 'Mute'}
