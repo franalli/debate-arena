@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { AGENTS, AGENT_ORDER } from '../lib/agents.js'
+import { ProviderLogo } from './ProviderLogos.jsx'
 
 export default function Transcript({ claims, onClaimClick, selectedNode }) {
   const endRef = useRef(null)
@@ -66,9 +67,13 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                   fontSize: '1.1rem',
                   marginBottom: '0.25rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.03em'
+                  letterSpacing: '0.03em',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem'
                 }}>
-                  {agent.name} <span style={{ fontWeight: 400, opacity: 0.6, fontSize: '0.85rem' }}>({agent.model})</span>
+                  <ProviderLogo agentId={agentId} size={16} />
+                  <span>{agent.name} <span style={{ fontWeight: 400, opacity: 0.6, fontSize: '0.85rem' }}>({agent.model})</span></span>
                 </div>
 
                 {/* Claims list */}
