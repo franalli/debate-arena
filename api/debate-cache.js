@@ -23,11 +23,11 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const topic = req.query?.topic
     if (!validateTopic(topic, res)) return
-    // ?fresh=1 → admin bypass. Skip the read, force-regenerate. Write
-    // path still runs at the end, so a fresh=1 call refreshes the cache
-    // for subsequent normal requests.
+    // ?fresh=1 → admin bypass. Skip the read; the live path will still
+    // POST the regenerated debate at the end, refreshing the cache for
+    // subsequent normal requests.
     if (req.query?.fresh === '1') {
-      return res.status(404).json({ cached: false, bypassed: true })
+      return res.status(404).json({ cached: false })
     }
     const key = debateCacheKey(topic, normalizeMode(req.query?.mode))
     const cached = await getCachedDebate(key)

@@ -85,7 +85,7 @@ export default async function handler(req, res) {
 
     res.setHeader('Content-Type', 'application/x-ndjson')
     res.setHeader('Cache-Control', 'no-store')
-    res.setHeader('X-Cache', 'MISS')
+    res.setHeader('X-Cache', bypass ? 'BYPASS' : 'MISS')
 
     // Tee: stream to client AND accumulate the full NDJSON for cache write
     // after the stream completes successfully.

@@ -102,7 +102,7 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
   const run = async () => {
     try {
       // Cache check before any LLM call. On hit, skip live generation entirely.
-      const cached = await fetchCachedDebate(topic, mode, abortController.signal)
+      const cached = await fetchCachedDebate(topic, mode, abortController.signal, fresh)
       if (cached?.claims?.length) {
         await replayCached(cached)
         return
