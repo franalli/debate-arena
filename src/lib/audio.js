@@ -31,20 +31,13 @@ export function primeAudio() {
   } catch { /* ignore */ }
 }
 
+// Cheap warmup: opens a connection to /api/tts without invoking EL.
+// Prior version POSTed a real 1-char request, which actually billed an
+// EL generation per debate start. A HEAD request hits the same vercel
+// function (cold-start warm) and our handler returns 405 fast — same
+// DNS/TCP/TLS reuse benefit for the first real POST that follows.
 export function primeTTS() {
-  if (audioDisabled) return
-  fetch('/api/tts', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ agent: 'advocate', text: '.' })
-  }).then(async (response) => {
-    if (!response.ok || !response.body) return
-    const reader = response.body.getReader()
-    while (true) {
-      const { done } = await reader.read()
-      if (done) break
-    }
-  }).catch(() => {})
+  fetch('/api/tts', { method: 'HEAD' }).catch(() => {})
 }
 
 export function resetAudio() {
@@ -116,22 +109,40 @@ function makeEndFirer(onPlaybackEnd, agent) {
   }
 }
 
+// Accumulates per-chunk character alignment into cumulative word timings,
+// emitting via onWords each time new alignment arrives. Returns the
+// per-chunk push function. Same object used by both MSE and Blob paths.
+function makeAlignmentSink(onWords) {
+  const chars = []
+  const starts = []
+  const ends = []
+  return (alignment) => {
+    if (!alignment || !onWords) return
+    chars.push(...alignment.characters)
+    starts.push(...alignment.characterStartTimesSeconds)
+    ends.push(...alignment.characterEndTimesSeconds)
+    onWords(charactersToWords(chars, starts, ends))
+  }
+}
+
 function setupPlaybackPromise(audio, signal) {
   return new Promise((resolve) => {
-    currentResolve = resolve
-    if (signal?.aborted) { resolve(); return }
-    audio.onended = () => resolve()
-    audio.onerror = () => resolve()
+    let timerId
+    // Clear the timer on every resolve path so the 60s closure isn't
+    // retained when the audio ends/aborts in the first 5s like usual.
+    const settle = () => { if (timerId) clearTimeout(timerId); resolve() }
+    currentResolve = settle
+    if (signal?.aborted) { settle(); return }
+    audio.onended = settle
+    audio.onerror = settle
     signal?.addEventListener('abort', () => {
       try { audio.pause() } catch { /* ignore */ }
-      resolve()
+      settle()
     }, { once: true })
-    setTimeout(() => {
-      if (currentResolve === resolve) {
-        console.warn('[audio] turn timeout reached, force-resolving')
-        try { audio.pause() } catch { /* ignore */ }
-        resolve()
-      }
+    timerId = setTimeout(() => {
+      console.warn('[audio] turn timeout reached, force-resolving')
+      try { audio.pause() } catch { /* ignore */ }
+      settle()
     }, TURN_TIMEOUT_MS)
   })
 }
@@ -206,9 +217,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
   currentAudio = audio
 
   let started = false
-  const allChars = []
-  const allStarts = []
-  const allEnds = []
+  const pushAlignment = makeAlignmentSink(onWords)
 
   try {
     await new Promise((resolve) => {
@@ -225,7 +234,6 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
           break
         }
 
-        // Audio chunk → MediaSource
         if (obj.audioBase64) {
           const bytes = base64ToBytes(obj.audioBase64)
           if (sourceBuffer.updating) {
@@ -251,13 +259,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
           }
         }
 
-        // Alignment → derive words → emit cumulative array
-        if (obj.alignment && onWords) {
-          allChars.push(...obj.alignment.characters)
-          allStarts.push(...obj.alignment.characterStartTimesSeconds)
-          allEnds.push(...obj.alignment.characterEndTimesSeconds)
-          onWords(charactersToWords(allChars, allStarts, allEnds))
-        }
+        pushAlignment(obj.alignment)
       }
 
       if (mediaSource.readyState === 'open') {
@@ -285,20 +287,13 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
 async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords }) {
   const fireEnd = makeEndFirer(onPlaybackEnd, agent)
   const audioParts = []
-  const allChars = []
-  const allStarts = []
-  const allEnds = []
+  const pushAlignment = makeAlignmentSink(onWords)
 
   try {
     for await (const obj of parseNdjson(body)) {
       if (signal?.aborted || getMuted?.()) return
       if (obj.audioBase64) audioParts.push(base64ToBytes(obj.audioBase64))
-      if (obj.alignment && onWords) {
-        allChars.push(...obj.alignment.characters)
-        allStarts.push(...obj.alignment.characterStartTimesSeconds)
-        allEnds.push(...obj.alignment.characterEndTimesSeconds)
-        onWords(charactersToWords(allChars, allStarts, allEnds))
-      }
+      pushAlignment(obj.alignment)
     }
   } catch (err) {
     if (err.name !== 'AbortError') {

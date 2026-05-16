@@ -24,21 +24,31 @@ export const AGENTS = {
 
 export const AGENT_ORDER = ['advocate', 'critic', 'wildcard']
 
+// Reverse map: claim-ID prefix -> agent id (e.g. 'adv' -> 'advocate').
+// Lets callers recover the speaker from a claim ID without re-stating the
+// 'adv' / 'crt' / 'wld' mapping inline.
+export const PREFIX_TO_AGENT = Object.fromEntries(
+  Object.entries(AGENTS).map(([id, a]) => [a.prefix, id])
+)
+
+// Strip markdown fences and extract the inner-most JSON object span.
+// Returns { cleaned, jsonSlice } — both available so callers can fall back
+// to plain text (cleaned) when JSON.parse fails on the slice.
+function extractJsonSlice(raw) {
+  const cleaned = raw.trim()
+    .replace(/^```(?:json)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+  const first = cleaned.indexOf('{')
+  const last = cleaned.lastIndexOf('}')
+  const jsonSlice = (first !== -1 && last > first) ? cleaned.slice(first, last + 1) : cleaned
+  return { cleaned, jsonSlice }
+}
+
 function parseAgentResponse(raw) {
-  let text = raw.trim()
-
-  // Strip markdown code fences
-  text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '')
-
-  // Find JSON object
-  const firstBrace = text.indexOf('{')
-  const lastBrace = text.lastIndexOf('}')
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    text = text.slice(firstBrace, lastBrace + 1)
-  }
+  const { cleaned, jsonSlice } = extractJsonSlice(raw)
 
   try {
-    const parsed = JSON.parse(text)
+    const parsed = JSON.parse(jsonSlice)
     if (parsed.claims && Array.isArray(parsed.claims) && parsed.claims.length > 0) {
       // Enforce single claim per agent per turn — take only the first
       const c = parsed.claims[0]
@@ -66,11 +76,7 @@ function parseAgentResponse(raw) {
     }
   }
 
-  // Last resort: strip fences from raw and use as plain text claim.
-  // Never return the markdown-wrapped JSON literal to the UI.
-  const cleaned = raw.trim()
-    .replace(/^```(?:json)?\s*\n?/i, '')
-    .replace(/\n?```\s*$/i, '')
+  // Last resort: never return the markdown-wrapped JSON literal to the UI.
   return [{ text: cleaned, rebuts: null, agrees_with: null }]
 }
 
@@ -119,15 +125,10 @@ export async function callVerdictAgent(topic, allClaims, signal) {
 }
 
 function parseVerdictResponse(raw) {
-  let text = raw.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '')
-
-  // Try parsing the full text first, then try extracting a JSON object
-  const candidates = [text]
-  const firstBrace = text.indexOf('{')
-  const lastBrace = text.lastIndexOf('}')
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    candidates.push(text.slice(firstBrace, lastBrace + 1))
-  }
+  const { cleaned, jsonSlice } = extractJsonSlice(raw)
+  // Try the full cleaned text first (e.g. when the model returned raw JSON
+  // without fences), then the brace-isolated slice.
+  const candidates = cleaned === jsonSlice ? [cleaned] : [cleaned, jsonSlice]
 
   for (const candidate of candidates) {
     try {
