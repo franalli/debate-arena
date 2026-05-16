@@ -1,4 +1,14 @@
 import { useState } from 'react'
+import { primeAudio, primeTTS } from '../lib/audio.js'
+import { GoogleLogo, OpenAILogo, AnthropicLogo, ElevenLabsLogo } from './ProviderLogos.jsx'
+import { useIsMobile } from '../lib/useMediaQuery.js'
+
+const POWERED_BY = [
+  { name: 'Anthropic',  url: 'https://www.anthropic.com',   Logo: AnthropicLogo },
+  { name: 'OpenAI',     url: 'https://openai.com',          Logo: OpenAILogo },
+  { name: 'Gemini',     url: 'https://deepmind.google/technologies/gemini', Logo: GoogleLogo },
+  { name: 'ElevenLabs', url: 'https://elevenlabs.io',       Logo: ElevenLabsLogo }
+]
 
 const SUGGESTIONS = [
   ['AI will replace most software engineers within 5 years', 'Space colonization should be humanity\'s top priority'],
@@ -6,8 +16,16 @@ const SUGGESTIONS = [
   ['Pineapple belongs on pizza', 'Remote work is better than office work']
 ]
 
-function ShimmerButton({ text, onClick }) {
+function ShimmerButton({ text, onClick, allowWrap = false }) {
   const [hovered, setHovered] = useState(false)
+
+  // When wrapping is allowed (mobile), the wrapper must be free to shrink
+  // below the text's intrinsic width so the text can wrap. Without wrapping
+  // (desktop), the wrapper should hug the text so the pill border stays
+  // flush with the label.
+  const wrapperFlex = allowWrap
+    ? { flex: '1 1 auto', minWidth: 0, maxWidth: '100%' }
+    : {}
 
   return (
     <div
@@ -15,12 +33,13 @@ function ShimmerButton({ text, onClick }) {
         position: 'relative',
         borderRadius: '2rem',
         padding: '1px',
-        background: 'linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate))',
+        background: 'var(--shimmer-gradient)',
         backgroundSize: '200% 100%',
         animation: 'border-shimmer 4s linear infinite',
         cursor: 'pointer',
         opacity: hovered ? 1 : 0.7,
-        transition: 'opacity 0.3s'
+        transition: 'opacity 0.3s',
+        ...wrapperFlex
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -35,7 +54,8 @@ function ShimmerButton({ text, onClick }) {
           borderRadius: '2rem',
           color: '#ffffff',
           fontSize: '0.85rem',
-          whiteSpace: 'nowrap',
+          whiteSpace: allowWrap ? 'normal' : 'nowrap',
+          lineHeight: 1.3,
           transition: 'color 0.3s',
           border: 'none',
           cursor: 'pointer'
@@ -51,34 +71,70 @@ export default function TopicInput({ onStart }) {
   const [topic, setTopic] = useState('')
   const [mode, setMode] = useState('fast')
   const rounds = 3
+  const isMobile = useIsMobile()
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (topic.trim()) onStart(topic.trim(), mode)
+    if (topic.trim()) {
+      primeAudio()
+      primeTTS()
+      onStart(topic.trim(), mode)
+    }
   }
 
   return (
     <div style={{
+      position: 'relative',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      justifyContent: 'center',
       minHeight: '100vh',
-      padding: '2rem',
-      gap: '2rem'
+      padding: isMobile ? '1.25rem 1rem' : '2rem',
+      overflow: 'hidden'
     }}>
+      {/* Topographic backdrop — fades toward the center so the headline
+          and input remain the focal point. Pointer-events off so it never
+          intercepts clicks on the suggestion buttons. */}
+      <div
+        aria-hidden="true"
+        className="topo-backdrop"
+        style={{
+          position: 'absolute',
+          inset: '-100px',
+          backgroundImage: 'url(/assets/contours.svg)',
+          backgroundSize: '900px 900px',
+          backgroundRepeat: 'repeat',
+          opacity: 0.07,
+          WebkitMaskImage: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.35) 35%, #000 75%)',
+          maskImage: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.35) 35%, #000 75%)',
+          pointerEvents: 'none',
+          zIndex: 0,
+          willChange: 'background-position'
+        }}
+      />
+      <div style={{
+        position: 'relative',
+        zIndex: 1,
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '2rem',
+        width: '100%'
+      }}>
       <div style={{ textAlign: 'center' }}>
         <h1 style={{
-          fontSize: '2.5rem',
+          fontSize: isMobile ? '1.9rem' : '2.5rem',
           fontWeight: 700,
           marginBottom: '0.5rem',
-          background: 'linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic))',
+          background: 'var(--title-gradient)',
           WebkitBackgroundClip: 'text',
           WebkitTextFillColor: 'transparent'
         }}>
           ⚔ Debate Arena
         </h1>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
+        <p style={{ color: 'var(--text-secondary)', fontSize: isMobile ? '0.95rem' : '1.1rem' }}>
           3 AI agents. {rounds} rounds. One topic.
         </p>
       </div>
@@ -168,12 +224,72 @@ export default function TopicInput({ onStart }) {
         width: '100%'
       }}>
         {SUGGESTIONS.map((row, i) => (
-          <div key={i} style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+          <div
+            key={i}
+            style={{
+              display: 'flex',
+              gap: '0.5rem',
+              justifyContent: 'center',
+              flexDirection: isMobile ? 'column' : 'row',
+              alignItems: isMobile ? 'stretch' : 'center'
+            }}
+          >
             {row.map((s) => (
-              <ShimmerButton key={s} text={s} onClick={() => setTopic(s)} />
+              <ShimmerButton key={s} text={s} onClick={() => setTopic(s)} allowWrap={isMobile} />
             ))}
           </div>
         ))}
+      </div>
+      </div>
+
+      <div style={{
+        position: 'relative',
+        zIndex: 1,
+        paddingTop: '2rem',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '0.75rem'
+      }}>
+        <span style={{
+          fontSize: '0.7rem',
+          color: 'var(--text-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.15em'
+        }}>
+          Powered by
+        </span>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '1.75rem',
+          flexWrap: 'wrap',
+          justifyContent: 'center'
+        }}>
+          {POWERED_BY.map((item) => (
+            <a
+              key={item.name}
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                color: 'var(--text-secondary)',
+                textDecoration: 'none',
+                fontSize: '0.85rem',
+                opacity: 0.7,
+                transition: 'opacity var(--transition)'
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7' }}
+            >
+              <item.Logo size={18} />
+              <span>{item.name}</span>
+            </a>
+          ))}
+        </div>
       </div>
     </div>
   )

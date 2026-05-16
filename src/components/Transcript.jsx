@@ -1,7 +1,62 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AGENTS, AGENT_ORDER } from '../lib/agents.js'
+import { ProviderLogo } from './ProviderLogos.jsx'
+import { getCurrentPlaybackTime } from '../lib/audio.js'
 
-export default function Transcript({ claims, onClaimClick, selectedNode }) {
+// Karaoke renderer: highlights words as the agent speaks them.
+// The rAF loop polls currentTime at 60Hz but only triggers a React
+// re-render when the active word INDEX transitions (a few Hz at typical
+// speech rate), so token-tree diffing doesn't run every frame.
+function KaraokeText({ text, words }) {
+  // Tokens preserve whitespace ('foo bar' -> ['foo', ' ', 'bar']) so we
+  // can match by word index while keeping the spaces in the DOM. Memo
+  // so the regex split doesn't repeat across renders.
+  const tokens = useMemo(() => text.split(/(\s+)/), [text])
+  // Stable ref into latest words array — read inside rAF without
+  // re-creating the effect on every chunk.
+  const wordsRef = useRef(words)
+  wordsRef.current = words
+  const [activeIdx, setActiveIdx] = useState(-1)
+
+  useEffect(() => {
+    let raf
+    let last = -1
+    const tick = () => {
+      const t = getCurrentPlaybackTime()
+      const arr = wordsRef.current
+      // Binary scan is unnecessary at <100 words — linear is fine.
+      let idx = -1
+      for (let i = 0; i < arr.length; i++) {
+        if (t < arr[i].start) break
+        idx = i
+        if (t < arr[i].end) break
+      }
+      if (idx !== last) {
+        last = idx
+        setActiveIdx(idx)
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  let wordIdx = 0
+  return (
+    <>
+      {tokens.map((tok, i) => {
+        if (/^\s+$/.test(tok)) return <span key={i}>{tok}</span>
+        const myIdx = wordIdx++
+        let cls = 'karaoke-word'
+        if (myIdx < activeIdx) cls += ' past'
+        else if (myIdx === activeIdx) cls += ' active'
+        return <span key={i} className={cls}>{tok}</span>
+      })}
+    </>
+  )
+}
+
+export default function Transcript({ claims, onClaimClick, selectedNode, speakingClaimId, claimWords = {} }) {
   const endRef = useRef(null)
 
   useEffect(() => {
@@ -68,12 +123,24 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                   textTransform: 'uppercase',
                   letterSpacing: '0.03em'
                 }}>
-                  {agent.name} <span style={{ fontWeight: 400, opacity: 0.6, fontSize: '0.85rem' }}>({agent.model})</span>
+                  {agent.name}{' '}
+                  <span style={{
+                    fontWeight: 400,
+                    opacity: 0.6,
+                    fontSize: '0.85rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.25rem'
+                  }}>
+                    (<ProviderLogo agentId={agentId} size={12} />{agent.model})
+                  </span>
                 </div>
 
                 {/* Claims list */}
                 {agentRoundClaims.map(claim => {
                   const isSelected = selectedNode === claim.id
+                  const isSpeaking = speakingClaimId === claim.id
+                  const speakingWords = isSpeaking ? (claimWords[claim.id] || []) : null
                   const displayText = claim.text
 
                   // Resolve rebuttal target to human-readable form
@@ -120,7 +187,9 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                       onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)' }}
                       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
                     >
-                      {displayText}
+                      {isSpeaking && speakingWords
+                        ? <KaraokeText text={displayText} words={speakingWords} />
+                        : displayText}
                       {rebuttalInfo && (
                         <div title={rebuttalInfo.fullText} style={{
                           fontSize: '0.85rem',

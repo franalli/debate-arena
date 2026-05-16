@@ -44,7 +44,7 @@ const WildcardVerdict = forwardRef(function WildcardVerdict({ claims, verdictTex
         <span style={{
           fontSize: '0.9rem',
           fontWeight: 600,
-          background: 'linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate))',
+          background: 'var(--shimmer-gradient)',
           backgroundSize: '200% 100%',
           animation: 'border-shimmer 4s linear infinite',
           WebkitBackgroundClip: 'text',
