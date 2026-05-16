@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { primeAudio } from '../lib/audio.js'
 
 const SUGGESTIONS = [
   ['AI will replace most software engineers within 5 years', 'Space colonization should be humanity\'s top priority'],
@@ -54,7 +55,10 @@ export default function TopicInput({ onStart }) {
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (topic.trim()) onStart(topic.trim(), mode)
+    if (topic.trim()) {
+      primeAudio()
+      onStart(topic.trim(), mode)
+    }
   }
 
   return (
