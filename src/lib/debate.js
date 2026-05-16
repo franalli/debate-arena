@@ -7,13 +7,14 @@ function buildVerdictTtsString(verdict) {
   return `Winning arguments: ${args}. The losing case fell short: ${gap}`
 }
 
-// Check the debate-text cache. Returns { claims, verdict } on hit, null otherwise.
-async function fetchCachedDebate(topic, mode, signal) {
+// Check the debate-text cache. Returns { claims, verdict } on hit, null
+// otherwise. With fresh=true, the server skips the read but still allows
+// the write path — so this run regenerates and refreshes the cache.
+async function fetchCachedDebate(topic, mode, signal, fresh) {
   try {
-    const res = await fetch(
-      `/api/debate-cache?topic=${encodeURIComponent(topic)}&mode=${mode}`,
-      { signal }
-    )
+    const params = new URLSearchParams({ topic, mode })
+    if (fresh) params.set('fresh', '1')
+    const res = await fetch(`/api/debate-cache?${params}`, { signal })
     if (!res.ok) return null
     const data = await res.json()
     return data.cached ? data.debate : null
@@ -36,7 +37,8 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
   const {
     onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete,
     onVerdictStart, onVerdict, onSpeakingStart, onSpeakingEnd, onSpeakingWords,
-    getMuted = () => false
+    getMuted = () => false,
+    fresh = false
   } = callbacks
   const abortController = new AbortController()
   const allClaims = []
@@ -50,6 +52,7 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
       agent: agentId,
       signal: abortController.signal,
       getMuted,
+      fresh,
       onPlaybackStart: () => onSpeakingStart?.(agentId, claimId),
       onPlaybackEnd: () => onSpeakingEnd?.(agentId, claimId),
       onWords: claimId ? (words) => onSpeakingWords?.(claimId, words) : undefined

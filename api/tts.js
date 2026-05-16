@@ -53,9 +53,11 @@ export default async function handler(req, res) {
   }
 
   // Cache check BEFORE billing char budget — cached hits cost the user
-  // nothing and don't consume EL quota.
+  // nothing and don't consume EL quota. ?fresh=1 skips the read but
+  // still writes, refreshing the cache entry for subsequent normals.
   const cacheKey = ttsCacheKey(text, MODEL_ID, voiceId, OUTPUT_FORMAT)
-  const cached = await getCachedTts(cacheKey)
+  const bypass = req.query?.fresh === '1'
+  const cached = bypass ? null : await getCachedTts(cacheKey)
   if (cached) {
     res.setHeader('Content-Type', 'application/x-ndjson')
     res.setHeader('Cache-Control', 'no-store')

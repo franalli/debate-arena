@@ -63,7 +63,7 @@ export function getCurrentPlaybackTime() {
 }
 
 export async function playAudioStream(text, opts) {
-  const { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords } = opts
+  const { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords, fresh } = opts
 
   if (audioDisabled) return
   if (getMuted?.()) return
@@ -71,7 +71,7 @@ export async function playAudioStream(text, opts) {
 
   let response
   try {
-    response = await fetch('/api/tts', {
+    response = await fetch(fresh ? '/api/tts?fresh=1' : '/api/tts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       signal,
