@@ -93,6 +93,8 @@ function makeEndFirer(onPlaybackEnd, agent) {
 function setupPlaybackPromise(audio, signal) {
   return new Promise((resolve) => {
     currentResolve = resolve
+    // addEventListener('abort', ...) does NOT fire if signal is already aborted.
+    if (signal?.aborted) { resolve(); return }
     audio.onended = () => resolve()
     audio.onerror = () => resolve()
     signal?.addEventListener('abort', () => {
