@@ -44,7 +44,7 @@ export function validateTopic(topic, res) {
   return true
 }
 
-const VALID_AGENT_IDS = new Set(['advocate', 'critic', 'wildcard'])
+export const VALID_AGENT_IDS = new Set(['advocate', 'critic', 'wildcard'])
 const AGENT_ORDER = ['advocate', 'critic', 'wildcard']
 
 export function validateHistory(history, round, agent, res) {

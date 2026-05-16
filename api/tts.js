@@ -1,9 +1,8 @@
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
-import { checkOrigin, getIp, checkCharBudget } from './_shared.js'
+import { checkOrigin, getIp, checkCharBudget, VALID_AGENT_IDS } from './_shared.js'
 
 const MODEL_ID = 'eleven_flash_v2_5'
 const OUTPUT_FORMAT = 'mp3_22050_32'
-const MAX_TEXT_LENGTH = 1000
 
 const VOICE_MAP = {
   advocate: {
@@ -37,15 +36,13 @@ export default async function handler(req, res) {
 
   const { agent, text } = req.body || {}
 
-  if (!['advocate', 'critic', 'wildcard'].includes(agent)) {
+  if (!VALID_AGENT_IDS.has(agent)) {
     return res.status(400).json({ error: 'Invalid agent' })
   }
   if (typeof text !== 'string' || text.length === 0) {
     return res.status(400).json({ error: 'Text required' })
   }
-  if (text.length > MAX_TEXT_LENGTH) {
-    return res.status(400).json({ error: `Text too long (max ${MAX_TEXT_LENGTH} chars)` })
-  }
+  // Length is enforced by checkCharBudget below (TTS_MAX_CHARS_PER_REQUEST env-configurable).
 
   const voiceId = getVoiceId(agent)
   if (!voiceId) {
