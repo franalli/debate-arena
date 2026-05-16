@@ -1,18 +1,18 @@
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
 import { checkOrigin, getIp, checkCharBudget, VALID_AGENT_IDS } from './_shared.js'
 
-const MODEL_ID = 'eleven_flash_v2_5'
+const MODEL_ID = process.env.ELEVENLABS_TTS_MODEL || 'eleven_flash_v2_5'
 const OUTPUT_FORMAT = 'mp3_22050_32'
 
 const VOICE_MAP = {
   advocate: {
-    voiceSettings: { stability: 0.4, similarityBoost: 0.75, style: 0.3, useSpeakerBoost: true }
+    voiceSettings: { stability: 0.4, similarityBoost: 0.75, style: 0.3, useSpeakerBoost: true, speed: 1.0 }
   },
   critic: {
-    voiceSettings: { stability: 0.6, similarityBoost: 0.75, style: 0.2, useSpeakerBoost: true }
+    voiceSettings: { stability: 0.6, similarityBoost: 0.75, style: 0.2, useSpeakerBoost: true, speed: 1.0 }
   },
   wildcard: {
-    voiceSettings: { stability: 0.5, similarityBoost: 0.75, style: 0.4, useSpeakerBoost: true }
+    voiceSettings: { stability: 0.5, similarityBoost: 0.75, style: 0.4, useSpeakerBoost: true, speed: 1.0 }
   }
 }
 
