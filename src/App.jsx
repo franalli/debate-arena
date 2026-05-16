@@ -9,6 +9,12 @@ import { runDebate } from './lib/debate.js'
 import { buildGraphData, computeWildcardScore } from './lib/graphUtils.js'
 import { AGENTS } from './lib/agents.js'
 
+const RATE_LIMIT_LABELS = {
+  cooldown: 'Cooldown',
+  ip_daily: 'Daily limit',
+  global_daily: 'Service over capacity'
+}
+
 export default function App() {
   const [topic, setTopic] = useState('')
   const [status, setStatus] = useState('idle') // idle | running | complete | error
@@ -71,12 +77,11 @@ export default function App() {
       },
       onError: (err, agentId, round) => {
         setThinkingAgent(null)
-        setError(err.message)
-        // Auto-clear cooldown messages after the wait expires
-        const cooldownMatch = err.message.match(/Wait (\d+)s/)
-        if (cooldownMatch) {
+        setError({ message: err.message, code: err.code, retryAfter: err.retryAfter })
+        // Auto-clear cooldown banner once the wait elapses
+        if (err.code === 'cooldown' && err.retryAfter) {
           if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
-          cooldownTimerRef.current = setTimeout(() => setError(null), Number(cooldownMatch[1]) * 1000)
+          cooldownTimerRef.current = setTimeout(() => setError(null), err.retryAfter * 1000)
         }
         // Terminal errors: auth failures, or any error before debate has claims (e.g. rate limit)
         if (err.message.includes('401') || accumulated.length === 0) {
@@ -282,36 +287,6 @@ export default function App() {
               Stop
             </button>
           )}
-          {/* Fast/Deep toggle */}
-          <div style={{
-            display: 'flex',
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius)',
-            overflow: 'hidden',
-            fontSize: '13px',
-            marginLeft: '8px',
-            opacity: 0.4,
-            pointerEvents: 'none'
-          }}>
-            {['fast', 'deep'].map(m => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                style={{
-                  padding: '0.3rem 0.6rem',
-                  background: mode === m ? 'var(--wildcard)' : 'transparent',
-                  color: mode === m ? '#fff' : 'var(--text-secondary)',
-                  border: 'none',
-                  cursor: 'pointer',
-                  transition: 'all var(--transition)',
-                  textTransform: 'capitalize'
-                }}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
 
           <div style={{
             borderRadius: 'var(--radius)',
@@ -355,8 +330,13 @@ export default function App() {
           alignItems: 'center',
           flexShrink: 0
         }}>
-          <span>{error}</span>
-          {status === 'error' && (
+          <span>
+            <strong style={{ marginRight: 8, textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: '0.75rem' }}>
+              {RATE_LIMIT_LABELS[error.code] || 'Error'}
+            </strong>
+            {error.message}
+          </span>
+          {status === 'error' && error.code !== 'ip_daily' && error.code !== 'global_daily' && (
             <button
               onClick={() => { setError(null); startDebate(topic) }}
               style={{

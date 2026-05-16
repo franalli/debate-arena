@@ -1,36 +1,24 @@
 export const AGENTS = {
   advocate: {
-    id: 'advocate',
     name: 'Advocate',
     model: 'Gemini 3 Flash',
-    label: 'Google',
     color: '#22c55e',
     dimColor: 'rgba(34, 197, 94, 0.15)',
     prefix: 'adv',
-    forceX: 0.25,
-    forceY: 0.55,
   },
   critic: {
-    id: 'critic',
     name: 'Critic',
     model: 'GPT-5.4',
-    label: 'OpenAI',
     color: '#ef4444',
     dimColor: 'rgba(239, 68, 68, 0.15)',
     prefix: 'crt',
-    forceX: 0.75,
-    forceY: 0.55,
   },
   wildcard: {
-    id: 'wildcard',
     name: 'Wildcard',
     model: 'Sonnet 4.6',
-    label: 'Anthropic',
     color: '#a855f7',
     dimColor: 'rgba(168, 85, 247, 0.15)',
     prefix: 'wld',
-    forceX: 0.5,
-    forceY: 0.3,
   }
 }
 
@@ -79,7 +67,11 @@ export async function callAgent(agentId, topic, allClaims, round, signal, mode) 
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || `Server error (${res.status})`)
+    const e = new Error(err.error || `Server error (${res.status})`)
+    e.status = res.status
+    if (err.code) e.code = err.code
+    if (err.retryAfter) e.retryAfter = err.retryAfter
+    throw e
   }
 
   const { raw } = await res.json()
@@ -96,7 +88,11 @@ export async function callVerdictAgent(topic, allClaims, signal) {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err.error || `Server error (${res.status})`)
+    const e = new Error(err.error || `Server error (${res.status})`)
+    e.status = res.status
+    if (err.code) e.code = err.code
+    if (err.retryAfter) e.retryAfter = err.retryAfter
+    throw e
   }
 
   const { raw } = await res.json()

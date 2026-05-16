@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useMemo } from 'react'
 import { select } from 'd3-selection'
 import 'd3-transition'
 import { AGENTS, AGENT_ORDER } from '../lib/agents.js'
-import { getWinner, computeWildcardScore } from '../lib/graphUtils.js'
+import { getWinner } from '../lib/graphUtils.js'
 
 // ── Arena geometry (viewBox 0 0 800 700) ──
 const VB_W = 800, VB_H = 700
@@ -45,12 +45,6 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
     if (status !== 'complete' || !claims?.length) return null
     return getWinner(claims)
   }, [status, claims])
-
-  const _liveScore = useMemo(() => {
-    if (!claims?.length) return null
-    const score = computeWildcardScore(claims)
-    return { advPts: score.advocate, crtPts: score.critic }
-  }, [claims])
 
   // Build position map for all nodes
   const posMap = useMemo(() => {
@@ -260,7 +254,7 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       }
     }
 
-    // ── Layer 5: Claim nodes ──
+    // ── Layer 4: Claim nodes ──
     const claimGroup = svg.append('g').attr('class', 'claim-nodes')
 
     // Determine which nodes are new (for entrance animation)
@@ -352,7 +346,7 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       })
     }
 
-    // ── Layer 6: Agent anchors ──
+    // ── Layer 5: Agent anchors ──
     // When a node is selected, find which agents are involved
     const involvedAgents = new Set()
     if (hasSelection) {
