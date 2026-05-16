@@ -190,12 +190,13 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
-      {/* Header */}
+      {/* Header — 3-column grid so the score is truly centered and the
+          right section can shrink the topic when space is tight */}
       <div style={{
-        position: 'relative',
-        display: 'flex',
+        display: 'grid',
+        gridTemplateColumns: '1fr auto 1fr',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        gap: '16px',
         height: '48px',
         padding: '0 24px',
         borderBottom: '1px solid var(--border)',
@@ -203,7 +204,7 @@ export default function App() {
         flexShrink: 0
       }}>
         {/* Left: Title + Rounds */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, justifySelf: 'start' }}>
           <h1 style={{
             fontSize: '16px',
             fontWeight: 700,
@@ -239,13 +240,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* Center: Score — absolutely centered on the full bar */}
+        {/* Center: Score — sits in the natural-width middle column,
+            so it stays visually centered regardless of side widths */}
         <div style={{
-          position: 'absolute',
-          left: '50%',
-          transform: 'translateX(-50%)',
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'center',
           pointerEvents: liveScore?.isComplete ? 'auto' : 'none'
         }}>
           {liveScore && (
@@ -271,10 +271,13 @@ export default function App() {
         </div>
 
         {/* Right: Topic + Fast/Deep + New Debate */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', minWidth: 0, justifySelf: 'end' }}>
           <span style={{
             fontSize: '13px',
             color: '#fff',
+            // Allow the topic to shrink with ellipsis when the right
+            // section runs out of room (instead of overflowing the score).
+            minWidth: 0,
             maxWidth: '350px',
             overflow: 'hidden',
             textOverflow: 'ellipsis',

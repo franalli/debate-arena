@@ -1,8 +1,8 @@
 // Inline SVG marks for the three LLM providers used in the debate.
-// Paths are simplified versions of the publicly-recognizable brand marks
-// (approximated from common knowledge). Use currentColor so they inherit
-// the surrounding agent color. If you have the official SVGs, drop them
-// in here as drop-in replacements — interface is { size }.
+// Path data is the canonical brand SVGs as curated by simple-icons
+// (https://github.com/simple-icons/simple-icons), which aggregates from
+// each brand's official assets. All use currentColor so they inherit
+// the surrounding agent color.
 
 export function GoogleLogo({ size = 14 }) {
   // Gemini-style 4-pointed sparkle (asterisk/star)
