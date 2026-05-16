@@ -1,4 +1,6 @@
-import { useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
+import { Volume2, VolumeX } from 'lucide-react'
+import { stopAudio } from './lib/audio.js'
 import TopicInput from './components/TopicInput.jsx'
 import DebateGraph from './components/DebateGraph.jsx'
 import Transcript from './components/Transcript.jsx'
@@ -32,6 +34,14 @@ export default function App() {
   const selectionTimerRef = useRef(null)
   const verdictRef = useRef(null)
   const cooldownTimerRef = useRef(null)
+  const [muted, setMuted] = useState(false)
+  const mutedRef = useRef(false)
+  const [speakingAgent, setSpeakingAgent] = useState(null)
+
+  useEffect(() => {
+    mutedRef.current = muted
+    if (muted) stopAudio()
+  }, [muted])
 
   const startDebate = useCallback((debateTopic, selectedMode) => {
     if (selectedMode) setMode(selectedMode)
@@ -107,9 +117,16 @@ export default function App() {
       },
       onComplete: () => {
         setThinkingAgent(null)
+        setSpeakingAgent(null)
         setStatus('complete')
+      },
+      onSpeakingStart: (agentId) => {
+        setSpeakingAgent(agentId)
+      },
+      onSpeakingEnd: () => {
+        setSpeakingAgent(null)
       }
-    }, activeMode)
+    }, activeMode, () => mutedRef.current)
 
     cancelRef.current = cancel
   }, [mode, maxRounds])
@@ -118,6 +135,7 @@ export default function App() {
     if (cancelRef.current) cancelRef.current()
     cancelRef.current = null
     setThinkingAgent(null)
+    setSpeakingAgent(null)
     setStatus('complete')
   }
 
@@ -129,6 +147,7 @@ export default function App() {
     setAllClaims([])
     setGraphData({ nodes: [], links: [] })
     setThinkingAgent(null)
+    setSpeakingAgent(null)
     setVerdictText(null)
     setRoundResults([])
     setError(null)
@@ -262,6 +281,27 @@ export default function App() {
           }}>
             {topic}
           </span>
+          <button
+            onClick={() => setMuted(m => !m)}
+            aria-label={muted ? 'Unmute' : 'Mute'}
+            title={muted ? 'Unmute' : 'Mute'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '0.35rem',
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius)',
+              color: muted ? 'var(--text-muted)' : 'var(--text-primary)',
+              cursor: 'pointer',
+              transition: 'all var(--transition)'
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--text-primary)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)' }}
+          >
+            {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
           {status === 'running' && (
             <button
               onClick={handleStop}
@@ -383,6 +423,7 @@ export default function App() {
             <DebateGraph
               graphData={graphData}
               thinkingAgent={thinkingAgent}
+              speakingAgent={speakingAgent}
               onNodeClick={handleClaimClick}
               selectedNode={selectedNode}
               status={status}
