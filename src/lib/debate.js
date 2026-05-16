@@ -1,8 +1,6 @@
 import { AGENTS, AGENT_ORDER, callAgent, callVerdictAgent } from './agents.js'
 import { playAudioStream, resetAudio } from './audio.js'
 
-const MAX_TTS_CHARS = 1000
-
 function buildVerdictTtsString(verdict) {
   const args = (verdict.winningArguments || []).join('. ')
   const gap = verdict.loserGap || ''
@@ -20,17 +18,16 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
 
   resetAudio()
 
-  // claimId disambiguates which claim's words are streaming back.
-  // Verdict speech uses claimId='verdict' so the UI can highlight it too.
+  // claimId is the karaoke key (null for verdict — its renderer doesn't
+  // do per-word highlight, so we skip alignment plumbing entirely there).
   const speakClaim = async (agentId, claimId, text) => {
-    const toSpeak = text.length > MAX_TTS_CHARS ? text.slice(0, MAX_TTS_CHARS) : text
-    await playAudioStream(toSpeak, {
+    await playAudioStream(text, {
       agent: agentId,
       signal: abortController.signal,
       getMuted,
       onPlaybackStart: () => onSpeakingStart?.(agentId, claimId),
       onPlaybackEnd: () => onSpeakingEnd?.(agentId, claimId),
-      onWords: (words) => onSpeakingWords?.(claimId, words)
+      onWords: claimId ? (words) => onSpeakingWords?.(claimId, words) : undefined
     })
   }
 
@@ -87,7 +84,7 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
 
           if (!abortController.signal.aborted) {
             const verdictTts = buildVerdictTtsString(verdict)
-            await speakClaim('wildcard', 'verdict', verdictTts)
+            await speakClaim('wildcard', null, verdictTts)
           }
         } catch (err) {
           if (err.name !== 'AbortError') {

@@ -8,8 +8,8 @@ import ThinkingIndicator from './components/ThinkingIndicator.jsx'
 import WildcardVerdict from './components/WildcardVerdict.jsx'
 import RoundToasts from './components/RoundToasts.jsx'
 import { runDebate } from './lib/debate.js'
-import { buildGraphData, computeWildcardScore } from './lib/graphUtils.js'
-import { AGENTS } from './lib/agents.js'
+import { buildGraphData, computeWildcardScore, getWinner } from './lib/graphUtils.js'
+import { AGENTS, PREFIX_TO_AGENT } from './lib/agents.js'
 import { useIsMobile } from './lib/useMediaQuery.js'
 
 const RATE_LIMIT_LABELS = {
@@ -82,7 +82,7 @@ export default function App() {
         const wc = accumulated.find(c => c.agentId === 'wildcard' && c.round === round)
         if (wc?.agrees_with) {
           const target = accumulated.find(c => c.id === wc.agrees_with)
-          const winnerId = target?.agentId || (wc.agrees_with.startsWith('adv') ? 'advocate' : wc.agrees_with.startsWith('crt') ? 'critic' : null)
+          const winnerId = target?.agentId || PREFIX_TO_AGENT[wc.agrees_with.slice(0, 3)] || null
           if (winnerId && AGENTS[winnerId]) {
             setRoundResults(prev => [...prev, {
               round,
@@ -191,7 +191,7 @@ export default function App() {
     if (!allClaims?.length) return null
     const score = computeWildcardScore(allClaims)
     if (score.advocate === 0 && score.critic === 0) return null
-    const leading = score.advocate > score.critic ? 'advocate' : score.critic > score.advocate ? 'critic' : null
+    const leading = getWinner(allClaims)
     const isComplete = status === 'complete'
     const label = leading
       ? `${AGENTS[leading].name}${isComplete ? ' wins' : ''} ${Math.max(score.advocate, score.critic)}-${Math.min(score.advocate, score.critic)}`
@@ -242,26 +242,25 @@ export default function App() {
         background: 'var(--bg-secondary)',
         flexShrink: 0
       }}>
-        {/* Left: Title (desktop only) + Rounds */}
+        {/* Left: Title + Rounds */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: isMobile ? '6px' : '12px',
+          gap: isMobile ? '8px' : '12px',
           minWidth: 0,
           justifySelf: 'start'
         }}>
-          {!isMobile && (
-            <h1 style={{
-              fontSize: '16px',
-              fontWeight: 700,
-              background: 'linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic))',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              margin: 0
-            }}>
-              ⚔ Debate Arena
-            </h1>
-          )}
+          <h1 style={{
+            fontSize: isMobile ? '13px' : '16px',
+            fontWeight: 700,
+            background: 'var(--title-gradient)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            margin: 0,
+            whiteSpace: 'nowrap'
+          }}>
+            ⚔ Debate Arena
+          </h1>
 
           {/* Round dots + label — drop dots on mobile, keep "1/3" */}
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
@@ -282,7 +281,7 @@ export default function App() {
               />
             ))}
             <span style={{
-              fontSize: '13px',
+              fontSize: isMobile ? '12px' : '13px',
               color: 'var(--text-secondary)',
               marginLeft: isMobile ? 0 : '4px',
               whiteSpace: 'nowrap'
@@ -388,7 +387,7 @@ export default function App() {
             borderRadius: 'var(--radius)',
             padding: '1px',
             background: status === 'complete'
-              ? 'linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate))'
+              ? 'var(--shimmer-gradient)'
               : 'var(--border)',
             backgroundSize: '200% 100%',
             animation: status === 'complete' ? 'border-shimmer 4s linear infinite' : 'none',

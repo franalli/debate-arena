@@ -1,46 +1,58 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AGENTS, AGENT_ORDER } from '../lib/agents.js'
 import { ProviderLogo } from './ProviderLogos.jsx'
 import { getCurrentPlaybackTime } from '../lib/audio.js'
 
-// Karaoke renderer: highlights words as the agent speaks them. Polls
-// the active audio's currentTime on rAF so we don't push 60Hz state
-// updates through the whole app — only this component re-renders.
-//
-// `claim.text` is the source-of-truth caption (already on-screen the
-// moment the LLM responds). `words` is the streaming alignment data
-// from ElevenLabs (arrives chunk by chunk). We split the claim into
-// tokens and overlay highlight state by index — words that haven't
-// streamed yet just render at the default style.
+// Karaoke renderer: highlights words as the agent speaks them.
+// The rAF loop polls currentTime at 60Hz but only triggers a React
+// re-render when the active word INDEX transitions (a few Hz at typical
+// speech rate), so token-tree diffing doesn't run every frame.
 function KaraokeText({ text, words }) {
-  const [time, setTime] = useState(0)
+  // Tokens preserve whitespace ('foo bar' -> ['foo', ' ', 'bar']) so we
+  // can match by word index while keeping the spaces in the DOM. Memo
+  // so the regex split doesn't repeat across renders.
+  const tokens = useMemo(() => text.split(/(\s+)/), [text])
+  // Stable ref into latest words array — read inside rAF without
+  // re-creating the effect on every chunk.
+  const wordsRef = useRef(words)
+  wordsRef.current = words
+  const [activeIdx, setActiveIdx] = useState(-1)
 
   useEffect(() => {
     let raf
+    let last = -1
     const tick = () => {
-      setTime(getCurrentPlaybackTime())
+      const t = getCurrentPlaybackTime()
+      const arr = wordsRef.current
+      // Binary scan is unnecessary at <100 words — linear is fine.
+      let idx = -1
+      for (let i = 0; i < arr.length; i++) {
+        if (t < arr[i].start) break
+        idx = i
+        if (t < arr[i].end) break
+      }
+      if (idx !== last) {
+        last = idx
+        setActiveIdx(idx)
+      }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [])
 
-  const tokens = text.split(/(\s+)/)  // preserve whitespace tokens
   let wordIdx = 0
   return (
-    <span>
+    <>
       {tokens.map((tok, i) => {
         if (/^\s+$/.test(tok)) return <span key={i}>{tok}</span>
-        const w = words[wordIdx]
-        wordIdx++
+        const myIdx = wordIdx++
         let cls = 'karaoke-word'
-        if (w) {
-          if (time >= w.end) cls += ' past'
-          else if (time >= w.start) cls += ' active'
-        }
+        if (myIdx < activeIdx) cls += ' past'
+        else if (myIdx === activeIdx) cls += ' active'
         return <span key={i} className={cls}>{tok}</span>
       })}
-    </span>
+    </>
   )
 }
 

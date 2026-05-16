@@ -145,3 +145,10 @@ input {
   color: var(--text-primary);
 }
 
+/* Brand gradients used in multiple buttons / titles. Promoted to
+   variables so the color order is defined once. */
+:root {
+  --shimmer-gradient: linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate));
+  --title-gradient: linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic));
+}
+
