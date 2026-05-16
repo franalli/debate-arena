@@ -47,20 +47,22 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: `Text too long (max ${MAX_TEXT_LENGTH} chars)` })
   }
 
-  const ip = getIp(req)
-  const budgetError = await checkCharBudget(ip, text.length)
-  if (budgetError) {
-    return res.status(429).json({ error: budgetError, code: 'tts_budget' })
-  }
-
   const voiceId = getVoiceId(agent)
   if (!voiceId) {
     console.error(`[tts] missing voice ID for ${agent}`)
     return res.status(500).json({ error: 'Voice not configured' })
   }
 
-  let headersSent = false
+  const ip = getIp(req)
+  const budgetError = await checkCharBudget(ip, text.length)
+  if (budgetError) {
+    return res.status(429).json({ error: budgetError, code: 'tts_budget' })
+  }
+
   try {
+    let clientGone = false
+    req.on('close', () => { clientGone = true })
+
     const audioStream = await getClient().textToSpeech.stream(voiceId, {
       text,
       modelId: MODEL_ID,
@@ -70,10 +72,6 @@ export default async function handler(req, res) {
 
     res.setHeader('Content-Type', 'audio/mpeg')
     res.setHeader('Cache-Control', 'no-store')
-    headersSent = true
-
-    let clientGone = false
-    req.on('close', () => { clientGone = true })
 
     for await (const chunk of audioStream) {
       if (clientGone) break
@@ -82,8 +80,8 @@ export default async function handler(req, res) {
     res.end()
   } catch (err) {
     console.error('[tts] error:', err.message)
-    if (!headersSent) {
-      res.status(502).json({ error: 'AI service temporarily unavailable' })
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'Service temporarily unavailable' })
     } else {
       res.destroy()
     }
