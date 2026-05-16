@@ -13,6 +13,7 @@ import {
   debateCacheKey,
   getCachedDebate,
   setCachedDebate,
+  deleteCachedDebate,
   normalizeMode,
   validateTopic
 } from './_shared.js'
@@ -23,13 +24,16 @@ export default async function handler(req, res) {
   if (req.method === 'GET') {
     const topic = req.query?.topic
     if (!validateTopic(topic, res)) return
-    // ?fresh=1 → admin bypass. Skip the read; the live path will still
-    // POST the regenerated debate at the end, refreshing the cache for
-    // subsequent normal requests.
+    const key = debateCacheKey(topic, normalizeMode(req.query?.mode))
+    // ?fresh=1 → admin bypass. Eagerly DELETE the stored entry so even
+    // if the live regen aborts/errors mid-run (persistDebateCache only
+    // writes on full success), the next normal visitor MISSes and tries
+    // again instead of being served the stale entry the user was
+    // trying to overwrite.
     if (req.query?.fresh === '1') {
+      await deleteCachedDebate(key)
       return res.status(404).json({ cached: false })
     }
-    const key = debateCacheKey(topic, normalizeMode(req.query?.mode))
     const cached = await getCachedDebate(key)
     if (!cached) return res.status(404).json({ cached: false })
     return res.status(200).json({ cached: true, debate: cached })
