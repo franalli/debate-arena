@@ -1,5 +1,10 @@
 // Browser-side TTS playback. Streams MP3 chunks via MediaSource API on
 // supporting browsers; falls back to Blob-then-play elsewhere.
+//
+// IMPORTANT: callers must serialize playAudioStream() invocations.
+// currentAudio and currentResolve are module-level singletons; a concurrent
+// second call would overwrite them and orphan the first call's Promise.
+// The debate orchestrator awaits each call before issuing the next.
 
 const MIME = 'audio/mpeg'
 
@@ -132,9 +137,9 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
           break
         }
         if (!started) {
-          started = true
           try {
             await audio.play()
+            started = true
             onPlaybackStart?.(agent)
           } catch (err) {
             console.error('[audio] play() rejected:', err.message)
@@ -149,6 +154,11 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
         audioDisabled = true
       }
     }
+
+    // If audio never actually started (play rejection, appendBuffer fail
+    // on first chunk, or abort/mute before first chunk), neither onended
+    // nor onerror will fire — resolve manually so the orchestrator unblocks.
+    if (!started && currentResolve) currentResolve()
 
     await playbackEnded
   } finally {
