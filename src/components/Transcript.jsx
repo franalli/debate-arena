@@ -1,8 +1,50 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AGENTS, AGENT_ORDER } from '../lib/agents.js'
 import { ProviderLogo } from './ProviderLogos.jsx'
+import { getCurrentPlaybackTime } from '../lib/audio.js'
 
-export default function Transcript({ claims, onClaimClick, selectedNode }) {
+// Karaoke renderer: highlights words as the agent speaks them. Polls
+// the active audio's currentTime on rAF so we don't push 60Hz state
+// updates through the whole app — only this component re-renders.
+//
+// `claim.text` is the source-of-truth caption (already on-screen the
+// moment the LLM responds). `words` is the streaming alignment data
+// from ElevenLabs (arrives chunk by chunk). We split the claim into
+// tokens and overlay highlight state by index — words that haven't
+// streamed yet just render at the default style.
+function KaraokeText({ text, words }) {
+  const [time, setTime] = useState(0)
+
+  useEffect(() => {
+    let raf
+    const tick = () => {
+      setTime(getCurrentPlaybackTime())
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  const tokens = text.split(/(\s+)/)  // preserve whitespace tokens
+  let wordIdx = 0
+  return (
+    <span>
+      {tokens.map((tok, i) => {
+        if (/^\s+$/.test(tok)) return <span key={i}>{tok}</span>
+        const w = words[wordIdx]
+        wordIdx++
+        let cls = 'karaoke-word'
+        if (w) {
+          if (time >= w.end) cls += ' past'
+          else if (time >= w.start) cls += ' active'
+        }
+        return <span key={i} className={cls}>{tok}</span>
+      })}
+    </span>
+  )
+}
+
+export default function Transcript({ claims, onClaimClick, selectedNode, speakingClaimId, claimWords = {} }) {
   const endRef = useRef(null)
 
   useEffect(() => {
@@ -85,6 +127,8 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                 {/* Claims list */}
                 {agentRoundClaims.map(claim => {
                   const isSelected = selectedNode === claim.id
+                  const isSpeaking = speakingClaimId === claim.id
+                  const speakingWords = isSpeaking ? (claimWords[claim.id] || []) : null
                   const displayText = claim.text
 
                   // Resolve rebuttal target to human-readable form
@@ -131,7 +175,9 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                       onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-hover)' }}
                       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
                     >
-                      {displayText}
+                      {isSpeaking && speakingWords
+                        ? <KaraokeText text={displayText} words={speakingWords} />
+                        : displayText}
                       {rebuttalInfo && (
                         <div title={rebuttalInfo.fullText} style={{
                           fontSize: '0.85rem',

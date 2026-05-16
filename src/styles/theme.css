@@ -128,3 +128,20 @@ input {
 .speaker-ring-2 { animation-delay: 0.55s; }
 .speaker-ring-3 { animation-delay: 1.10s; }
 
+/* ── Karaoke word highlight (used by Transcript) ──────────────
+   Default: claim text reads at normal brightness. While being
+   spoken, unspoken words dim back, the active word pops bright,
+   and spoken words stay at the default. Transition softens the
+   per-word edge so it doesn't feel like a flashing cursor. */
+.karaoke-word {
+  color: var(--text-muted);
+  transition: color 0.18s ease-out, font-weight 0.18s ease-out;
+}
+.karaoke-word.active {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.karaoke-word.past {
+  color: var(--text-primary);
+}
+

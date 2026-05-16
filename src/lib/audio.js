@@ -1,5 +1,8 @@
-// Browser-side TTS playback. Streams MP3 chunks via MediaSource API on
-// supporting browsers; falls back to Blob-then-play elsewhere.
+// Browser-side TTS playback with word-level timing (karaoke).
+// Streams NDJSON from /api/tts where each line is
+// { audioBase64, alignment: { characters, characterStartTimesSeconds, characterEndTimesSeconds } }.
+// Audio bytes feed the MediaSource (or Blob fallback); alignment data is
+// accumulated into word timings and emitted via onWords for the UI.
 //
 // IMPORTANT: callers must serialize playAudioStream() invocations.
 // currentAudio and currentResolve are module-level singletons; a concurrent
@@ -17,7 +20,6 @@ let currentAudio = null
 let currentResolve = null
 const useMSE = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported?.(MIME)
 
-// 1-byte silent MP3 to unlock the autoplay policy after user gesture
 const SILENT_MP3 = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQxAADB8AhSmxhIIEVCSiJrDCQBTcu3UrAIwUdkRgQbFAZC1CQEwTJ9mjRvBA4UOLD8nKVOWfh+UlK3z/177OXrfOdKl7pyn3Xf//FJAhcAvWLQ4VBYRBRY7DkmKxk+kpQq3w8q9z2pZX1V3K28cVgxbm0XbWUcgmt2vGN1XbWgrt7T2VYju28t7zoxNQVHO9b6vmH9oVbA3GRdz0XBdo7uKgTAGqYsAd/4WCxVjW9D6Sd45cKn1Bp1V/L/3//+x9b//6Ohn5Lo'
 
 // ── Public API ─────────────────────────────────────────────
@@ -29,9 +31,6 @@ export function primeAudio() {
   } catch { /* ignore */ }
 }
 
-// Fire-and-forget warmup. Sends a 1-char TTS request and drains the response
-// without playing. Pre-establishes the fetch + EL model so the first real turn
-// dodges the cold-start hit (matters most for slower TTS models).
 export function primeTTS() {
   if (audioDisabled) return
   fetch('/api/tts', {
@@ -45,7 +44,7 @@ export function primeTTS() {
       const { done } = await reader.read()
       if (done) break
     }
-  }).catch(() => { /* ignore — best-effort warmup */ })
+  }).catch(() => {})
 }
 
 export function resetAudio() {
@@ -64,8 +63,14 @@ export function stopAudio() {
   }
 }
 
+// Karaoke driver: returns the current audio playback position in seconds,
+// or 0 if no audio is active. Consumers (Transcript) poll this on rAF.
+export function getCurrentPlaybackTime() {
+  return currentAudio ? currentAudio.currentTime : 0
+}
+
 export async function playAudioStream(text, opts) {
-  const { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd } = opts
+  const { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords } = opts
 
   if (audioDisabled) return
   if (getMuted?.()) return
@@ -92,7 +97,7 @@ export async function playAudioStream(text, opts) {
     return
   }
 
-  const playerOpts = { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd }
+  const playerOpts = { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords }
   if (useMSE) {
     await playViaMSE(response.body, playerOpts)
   } else {
@@ -111,9 +116,6 @@ function makeEndFirer(onPlaybackEnd, agent) {
   }
 }
 
-// Returns a Promise that resolves on natural end, error, signal abort, or
-// TURN_TIMEOUT_MS elapsed (safety net for stalled streams). Also sets
-// currentResolve so stopAudio() can unblock the await.
 function setupPlaybackPromise(audio, signal) {
   return new Promise((resolve) => {
     currentResolve = resolve
@@ -134,17 +136,79 @@ function setupPlaybackPromise(audio, signal) {
   })
 }
 
+// atob() → Uint8Array. MediaSource needs raw bytes, not base64.
+function base64ToBytes(b64) {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+// Walk EL's character-level alignment and group into words.
+// Treats whitespace as word boundaries; punctuation stays with the word.
+function charactersToWords(chars, starts, ends) {
+  const words = []
+  let buf = []
+  let bufStart = 0
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i]
+    if (/\s/.test(c)) {
+      if (buf.length > 0) {
+        words.push({ word: buf.join(''), start: bufStart, end: ends[i - 1] })
+        buf = []
+      }
+    } else {
+      if (buf.length === 0) bufStart = starts[i]
+      buf.push(c)
+    }
+  }
+  if (buf.length > 0) {
+    words.push({ word: buf.join(''), start: bufStart, end: ends[chars.length - 1] })
+  }
+  return words
+}
+
+// Pull NDJSON chunks from the response body, demuxing audio bytes
+// (for MediaSource) from alignment data (for the karaoke callback).
+async function* parseNdjson(body) {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        if (buffer.trim()) {
+          try { yield JSON.parse(buffer) } catch { /* skip malformed */ }
+        }
+        return
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try { yield JSON.parse(line) } catch { /* skip malformed */ }
+      }
+    }
+  } finally {
+    try { reader.cancel() } catch { /* ignore */ }
+  }
+}
+
 // ── MSE path ───────────────────────────────────────────────
 
-async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd }) {
+async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords }) {
   const fireEnd = makeEndFirer(onPlaybackEnd, agent)
   const mediaSource = new MediaSource()
   const audio = new Audio()
   audio.src = URL.createObjectURL(mediaSource)
   currentAudio = audio
 
-  const reader = body.getReader()
   let started = false
+  const allChars = []
+  const allStarts = []
+  const allEnds = []
 
   try {
     await new Promise((resolve) => {
@@ -155,39 +219,49 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
     const playbackEnded = setupPlaybackPromise(audio, signal)
 
     try {
-      while (true) {
+      for await (const obj of parseNdjson(body)) {
         if (signal?.aborted || getMuted?.()) {
           try { audio.pause() } catch { /* ignore */ }
           break
         }
-        const { done, value } = await reader.read()
-        if (done) {
-          if (mediaSource.readyState === 'open') {
-            try { mediaSource.endOfStream() } catch { /* ignore */ }
+
+        // Audio chunk → MediaSource
+        if (obj.audioBase64) {
+          const bytes = base64ToBytes(obj.audioBase64)
+          if (sourceBuffer.updating) {
+            await new Promise((r) => sourceBuffer.addEventListener('updateend', r, { once: true }))
           }
-          break
-        }
-        if (sourceBuffer.updating) {
-          await new Promise((r) => sourceBuffer.addEventListener('updateend', r, { once: true }))
-        }
-        try {
-          sourceBuffer.appendBuffer(value)
-        } catch (err) {
-          console.error('[audio] appendBuffer failed:', err.message)
-          audioDisabled = true
-          break
-        }
-        if (!started) {
           try {
-            await audio.play()
-            started = true
-            onPlaybackStart?.(agent)
+            sourceBuffer.appendBuffer(bytes)
           } catch (err) {
-            console.error('[audio] play() rejected:', err.message)
+            console.error('[audio] appendBuffer failed:', err.message)
             audioDisabled = true
             break
           }
+          if (!started) {
+            try {
+              await audio.play()
+              started = true
+              onPlaybackStart?.(agent)
+            } catch (err) {
+              console.error('[audio] play() rejected:', err.message)
+              audioDisabled = true
+              break
+            }
+          }
         }
+
+        // Alignment → derive words → emit cumulative array
+        if (obj.alignment && onWords) {
+          allChars.push(...obj.alignment.characters)
+          allStarts.push(...obj.alignment.characterStartTimesSeconds)
+          allEnds.push(...obj.alignment.characterEndTimesSeconds)
+          onWords(charactersToWords(allChars, allStarts, allEnds))
+        }
+      }
+
+      if (mediaSource.readyState === 'open') {
+        try { mediaSource.endOfStream() } catch { /* ignore */ }
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
@@ -196,14 +270,9 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
       }
     }
 
-    // If audio never actually started (play rejection, appendBuffer fail
-    // on first chunk, or abort/mute before first chunk), neither onended
-    // nor onerror will fire — resolve manually so the orchestrator unblocks.
     if (!started && currentResolve) currentResolve()
-
     await playbackEnded
   } finally {
-    reader.cancel().catch(() => {})  // Free EL stream + serverless time
     fireEnd()
     try { URL.revokeObjectURL(audio.src) } catch { /* ignore */ }
     if (currentAudio === audio) currentAudio = null
@@ -213,20 +282,23 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
 
 // ── Blob fallback ──────────────────────────────────────────
 
-async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd }) {
+async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords }) {
   const fireEnd = makeEndFirer(onPlaybackEnd, agent)
-  const reader = body.getReader()
-  const chunks = []
+  const audioParts = []
+  const allChars = []
+  const allStarts = []
+  const allEnds = []
 
   try {
-    while (true) {
-      if (signal?.aborted || getMuted?.()) {
-        reader.cancel().catch(() => {})
-        return
+    for await (const obj of parseNdjson(body)) {
+      if (signal?.aborted || getMuted?.()) return
+      if (obj.audioBase64) audioParts.push(base64ToBytes(obj.audioBase64))
+      if (obj.alignment && onWords) {
+        allChars.push(...obj.alignment.characters)
+        allStarts.push(...obj.alignment.characterStartTimesSeconds)
+        allEnds.push(...obj.alignment.characterEndTimesSeconds)
+        onWords(charactersToWords(allChars, allStarts, allEnds))
       }
-      const { done, value } = await reader.read()
-      if (done) break
-      chunks.push(value)
     }
   } catch (err) {
     if (err.name !== 'AbortError') {
@@ -237,8 +309,9 @@ async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onP
   }
 
   if (signal?.aborted || getMuted?.()) return
+  if (audioParts.length === 0) return
 
-  const blob = new Blob(chunks, { type: MIME })
+  const blob = new Blob(audioParts, { type: MIME })
   const url = URL.createObjectURL(blob)
   const audio = new Audio(url)
   currentAudio = audio
