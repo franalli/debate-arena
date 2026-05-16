@@ -221,11 +221,20 @@ export function ttsCacheKey(text, model, voice, format) {
   return `tts:cache:${hash}`
 }
 
+// Wrapper avoids Upstash auto-deserialization clobbering single-line
+// NDJSON bodies. A one-chunk body is itself valid JSON ('{"…":"…"}\n'),
+// which the SDK would parse into an object on GET — then res.write(obj)
+// stringifies to '[object Object]' and breaks the client. Wrapping in
+// { body } guarantees we always get an object back and read .body.
 export async function getCachedTts(key) {
   const redis = getRedis()
   if (!redis) return null
   try {
-    return await redis.get(key)
+    const v = await redis.get(key)
+    if (!v) return null
+    if (typeof v === 'string') return v
+    if (typeof v === 'object' && typeof v.body === 'string') return v.body
+    return null
   } catch (err) {
     console.error('[tts-cache] get error:', err.message)
     return null
@@ -236,22 +245,28 @@ export async function setCachedTts(key, ndjsonBody) {
   const redis = getRedis()
   if (!redis) return
   try {
-    await redis.set(key, ndjsonBody, { ex: TTS_CACHE_TTL_SECONDS })
+    await redis.set(key, { body: ndjsonBody }, { ex: TTS_CACHE_TTL_SECONDS })
   } catch (err) {
     console.error('[tts-cache] set error:', err.message)
   }
 }
 
+// Single source of truth for fast/deep mode coercion. Anything that isn't
+// the literal 'deep' falls back to 'fast' — matches /api/debate's behavior.
+export function normalizeMode(m) {
+  return m === 'deep' ? 'deep' : 'fast'
+}
+
 // ── Debate cache (text only — claims + verdict) ──────────────────────────────
-// Keyed by every input that affects the LLM output: topic, mode, all three
-// model IDs, both token caps. Voice/TTS settings are NOT part of this key
-// because they don't affect the text — they're handled by the separate TTS
-// cache layer. Auto-expires after CACHE_TTL_SECONDS; any env-var bump
-// changes the hash and naturally misses, forcing a fresh debate.
+// Keyed by every input that affects the LLM output: topic (normalized),
+// mode, all three model IDs, both token caps. Voice/TTS settings are NOT
+// in this key — they only affect audio and are covered by the TTS cache.
+// Topic is trimmed + lowercased so trivial casing/whitespace differences
+// hit the same cache entry; the LLM doesn't care, the cache shouldn't either.
 export function debateCacheKey(topic, mode) {
   const inputs = JSON.stringify({
-    topic,
-    mode,
+    topic: String(topic).trim().toLowerCase(),
+    mode: normalizeMode(mode),
     anthropic: process.env.ANTHROPIC_MODEL || '',
     openai: process.env.OPENAI_MODEL || '',
     google: process.env.GOOGLE_MODEL || '',
@@ -262,12 +277,13 @@ export function debateCacheKey(topic, mode) {
   return `debate:cache:${hash}`
 }
 
+// Upstash SDK auto-serializes objects on SET and auto-deserializes on GET,
+// so we round-trip naturally without manual JSON.stringify.
 export async function getCachedDebate(key) {
   const redis = getRedis()
   if (!redis) return null
   try {
-    const v = await redis.get(key)
-    return v ? (typeof v === 'string' ? JSON.parse(v) : v) : null
+    return (await redis.get(key)) || null
   } catch (err) {
     console.error('[debate-cache] get error:', err.message)
     return null
@@ -278,7 +294,7 @@ export async function setCachedDebate(key, debate) {
   const redis = getRedis()
   if (!redis) return
   try {
-    await redis.set(key, JSON.stringify(debate), { ex: CACHE_TTL_SECONDS })
+    await redis.set(key, debate, { ex: CACHE_TTL_SECONDS })
   } catch (err) {
     console.error('[debate-cache] set error:', err.message)
   }

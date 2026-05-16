@@ -94,12 +94,14 @@ export default async function handler(req, res) {
       chunks.push(line)
       res.write(line)
     }
-    res.end()
-    // Cache only on full completion (don't pollute cache with truncated
-    // streams from aborted requests).
+    // Await the cache write BEFORE res.end(). On Vercel serverless, the
+    // function may be torn down once the response closes; a fire-and-forget
+    // write could silently never persist. The client's already buffered
+    // every byte by this point so the extra ~10-30ms is invisible.
     if (!clientGone) {
-      setCachedTts(cacheKey, chunks.join('')).catch(() => {})
+      await setCachedTts(cacheKey, chunks.join(''))
     }
+    res.end()
   } catch (err) {
     console.error('[tts] error:', err.message)
     if (!res.headersSent) {
