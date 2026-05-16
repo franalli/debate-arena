@@ -300,6 +300,16 @@ export async function setCachedDebate(key, debate) {
   }
 }
 
+export async function deleteCachedDebate(key) {
+  const redis = getRedis()
+  if (!redis) return
+  try {
+    await redis.del(key)
+  } catch (err) {
+    console.error('[debate-cache] del error:', err.message)
+  }
+}
+
 // ── History formatting ────────────────────────────────────────
 export function formatHistory(claims) {
   if (!Array.isArray(claims) || claims.length === 0)

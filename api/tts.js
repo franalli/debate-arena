@@ -56,8 +56,8 @@ export default async function handler(req, res) {
   // nothing and don't consume EL quota. ?fresh=1 skips the read but
   // still writes, refreshing the cache entry for subsequent normals.
   const cacheKey = ttsCacheKey(text, MODEL_ID, voiceId, OUTPUT_FORMAT)
-  const bypass = req.query?.fresh === '1'
-  const cached = bypass ? null : await getCachedTts(cacheKey)
+  const fresh = req.query?.fresh === '1'
+  const cached = fresh ? null : await getCachedTts(cacheKey)
   if (cached) {
     res.setHeader('Content-Type', 'application/x-ndjson')
     res.setHeader('Cache-Control', 'no-store')
@@ -85,7 +85,7 @@ export default async function handler(req, res) {
 
     res.setHeader('Content-Type', 'application/x-ndjson')
     res.setHeader('Cache-Control', 'no-store')
-    res.setHeader('X-Cache', bypass ? 'BYPASS' : 'MISS')
+    res.setHeader('X-Cache', fresh ? 'BYPASS' : 'MISS')
 
     // Tee: stream to client AND accumulate the full NDJSON for cache write
     // after the stream completes successfully.
