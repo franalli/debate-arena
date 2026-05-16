@@ -67,13 +67,19 @@ export default function Transcript({ claims, onClaimClick, selectedNode }) {
                   fontSize: '1.1rem',
                   marginBottom: '0.25rem',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.03em',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.4rem'
+                  letterSpacing: '0.03em'
                 }}>
-                  <ProviderLogo agentId={agentId} size={16} />
-                  <span>{agent.name} <span style={{ fontWeight: 400, opacity: 0.6, fontSize: '0.85rem' }}>({agent.model})</span></span>
+                  {agent.name}{' '}
+                  <span style={{
+                    fontWeight: 400,
+                    opacity: 0.6,
+                    fontSize: '0.85rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.25rem'
+                  }}>
+                    (<ProviderLogo agentId={agentId} size={12} />{agent.model})
+                  </span>
                 </div>
 
                 {/* Claims list */}
