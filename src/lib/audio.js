@@ -8,7 +8,6 @@
 
 const MIME = 'audio/mpeg'
 
-// Module state
 let audioDisabled = false
 let currentAudio = null
 let currentResolve = null
@@ -70,27 +69,50 @@ export async function playAudioStream(text, opts) {
     return
   }
 
+  const playerOpts = { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd }
   if (useMSE) {
-    await playViaMSE(response.body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd })
+    await playViaMSE(response.body, playerOpts)
   } else {
-    await playViaBlob(response.body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd })
+    await playViaBlob(response.body, playerOpts)
   }
+}
+
+// ── Internal helpers ───────────────────────────────────────
+
+function makeEndFirer(onPlaybackEnd, agent) {
+  let called = false
+  return () => {
+    if (called) return
+    called = true
+    onPlaybackEnd?.(agent)
+  }
+}
+
+// Returns a Promise that resolves on natural end, error, or signal abort.
+// Also sets currentResolve so stopAudio() can unblock the await.
+function setupPlaybackPromise(audio, signal) {
+  return new Promise((resolve) => {
+    currentResolve = resolve
+    audio.onended = () => resolve()
+    audio.onerror = () => resolve()
+    signal?.addEventListener('abort', () => {
+      try { audio.pause() } catch { /* ignore */ }
+      resolve()
+    }, { once: true })
+  })
 }
 
 // ── MSE path ───────────────────────────────────────────────
 
 async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd }) {
-  let endCalled = false
-  const fireEnd = () => {
-    if (endCalled) return
-    endCalled = true
-    onPlaybackEnd?.(agent)
-  }
-
+  const fireEnd = makeEndFirer(onPlaybackEnd, agent)
   const mediaSource = new MediaSource()
   const audio = new Audio()
   audio.src = URL.createObjectURL(mediaSource)
   currentAudio = audio
+
+  const reader = body.getReader()
+  let started = false
 
   try {
     await new Promise((resolve) => {
@@ -98,20 +120,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
     })
 
     const sourceBuffer = mediaSource.addSourceBuffer(MIME)
-    const reader = body.getReader()
-    let started = false
-
-    const playbackEnded = new Promise((resolve) => {
-      currentResolve = resolve
-      audio.onended = () => resolve()
-      audio.onerror = () => resolve()
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          try { audio.pause() } catch { /* ignore */ }
-          resolve()
-        })
-      }
-    })
+    const playbackEnded = setupPlaybackPromise(audio, signal)
 
     try {
       while (true) {
@@ -162,6 +171,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
 
     await playbackEnded
   } finally {
+    reader.cancel().catch(() => {})  // Free EL stream + serverless time
     fireEnd()
     try { URL.revokeObjectURL(audio.src) } catch { /* ignore */ }
     if (currentAudio === audio) currentAudio = null
@@ -172,19 +182,16 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
 // ── Blob fallback ──────────────────────────────────────────
 
 async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd }) {
-  let endCalled = false
-  const fireEnd = () => {
-    if (endCalled) return
-    endCalled = true
-    onPlaybackEnd?.(agent)
-  }
-
+  const fireEnd = makeEndFirer(onPlaybackEnd, agent)
   const reader = body.getReader()
   const chunks = []
 
   try {
     while (true) {
-      if (signal?.aborted || getMuted?.()) return
+      if (signal?.aborted || getMuted?.()) {
+        reader.cancel().catch(() => {})
+        return
+      }
       const { done, value } = await reader.read()
       if (done) break
       chunks.push(value)
@@ -205,24 +212,18 @@ async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onP
   currentAudio = audio
 
   try {
-    await new Promise((resolve) => {
-      currentResolve = resolve
-      audio.onended = () => resolve()
-      audio.onerror = () => resolve()
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          try { audio.pause() } catch { /* ignore */ }
-          resolve()
-        })
-      }
-      audio.play().then(() => {
-        onPlaybackStart?.(agent)
-      }).catch((err) => {
-        console.error('[audio] blob play rejected:', err.message)
-        audioDisabled = true
-        resolve()
-      })
-    })
+    const playbackEnded = setupPlaybackPromise(audio, signal)
+    let started = false
+    try {
+      await audio.play()
+      started = true
+      onPlaybackStart?.(agent)
+    } catch (err) {
+      console.error('[audio] blob play rejected:', err.message)
+      audioDisabled = true
+    }
+    if (!started && currentResolve) currentResolve()
+    await playbackEnded
   } finally {
     fireEnd()
     try { URL.revokeObjectURL(url) } catch { /* ignore */ }

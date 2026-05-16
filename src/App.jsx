@@ -125,8 +125,9 @@ export default function App() {
       },
       onSpeakingEnd: () => {
         setSpeakingAgent(null)
-      }
-    }, activeMode, () => mutedRef.current)
+      },
+      getMuted: () => mutedRef.current
+    }, activeMode)
 
     cancelRef.current = cancel
   }, [mode, maxRounds])

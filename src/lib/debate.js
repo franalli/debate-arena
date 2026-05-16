@@ -6,14 +6,14 @@ const MAX_TTS_CHARS = 1000
 function buildVerdictTtsString(verdict) {
   const args = (verdict.winningArguments || []).join('. ')
   const gap = verdict.loserGap || ''
-  const combined = `Winning arguments: ${args}. The losing case fell short: ${gap}`
-  return combined.length > MAX_TTS_CHARS ? combined.slice(0, MAX_TTS_CHARS) : combined
+  return `Winning arguments: ${args}. The losing case fell short: ${gap}`
 }
 
-export function runDebate(topic, maxRounds, callbacks, mode = 'fast', getMuted = () => false) {
+export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
   const {
     onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete,
-    onVerdictStart, onVerdict, onSpeakingStart, onSpeakingEnd
+    onVerdictStart, onVerdict, onSpeakingStart, onSpeakingEnd,
+    getMuted = () => false
   } = callbacks
   const abortController = new AbortController()
   const allClaims = []
@@ -21,8 +21,7 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast', getMuted =
   resetAudio()
 
   const speakClaim = async (agentId, text) => {
-    let toSpeak = text
-    if (toSpeak.length > MAX_TTS_CHARS) toSpeak = toSpeak.slice(0, MAX_TTS_CHARS)
+    const toSpeak = text.length > MAX_TTS_CHARS ? text.slice(0, MAX_TTS_CHARS) : text
     await playAudioStream(toSpeak, {
       agent: agentId,
       signal: abortController.signal,
