@@ -8,7 +8,7 @@ export const AGENTS = {
   },
   critic: {
     name: 'Critic',
-    model: 'GPT-5.4',
+    model: 'GPT-5.5',
     color: '#ef4444',
     dimColor: 'rgba(239, 68, 68, 0.15)',
     prefix: 'crt',
