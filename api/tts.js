@@ -2,7 +2,7 @@ import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
 import { checkOrigin, getIp, checkCharBudget, VALID_AGENT_IDS } from './_shared.js'
 
 const MODEL_ID = process.env.ELEVENLABS_TTS_MODEL || 'eleven_flash_v2_5'
-const OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_22050_32'
+const OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128'
 
 const VOICE_MAP = {
   advocate: {
