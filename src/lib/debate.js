@@ -1,9 +1,36 @@
 import { AGENTS, AGENT_ORDER, callAgent, callVerdictAgent } from './agents.js'
+import { playAudioStream, resetAudio } from './audio.js'
 
-export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
-  const { onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete, onVerdictStart, onVerdict } = callbacks
+const MAX_TTS_CHARS = 1000
+
+function buildVerdictTtsString(verdict) {
+  const args = (verdict.winningArguments || []).join('. ')
+  const gap = verdict.loserGap || ''
+  const combined = `Winning arguments: ${args}. The losing case fell short: ${gap}`
+  return combined.length > MAX_TTS_CHARS ? combined.slice(0, MAX_TTS_CHARS) : combined
+}
+
+export function runDebate(topic, maxRounds, callbacks, mode = 'fast', getMuted = () => false) {
+  const {
+    onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete,
+    onVerdictStart, onVerdict, onSpeakingStart, onSpeakingEnd
+  } = callbacks
   const abortController = new AbortController()
   const allClaims = []
+
+  resetAudio()
+
+  const speakClaim = async (agentId, text) => {
+    let toSpeak = text
+    if (toSpeak.length > MAX_TTS_CHARS) toSpeak = toSpeak.slice(0, MAX_TTS_CHARS)
+    await playAudioStream(toSpeak, {
+      agent: agentId,
+      signal: abortController.signal,
+      getMuted,
+      onPlaybackStart: () => onSpeakingStart?.(agentId),
+      onPlaybackEnd: () => onSpeakingEnd?.(agentId)
+    })
+  }
 
   const run = async () => {
     try {
@@ -27,6 +54,9 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
 
             allClaims.push(...newClaims)
             onAgentComplete?.(agentId, round, newClaims)
+
+            const textToSpeak = newClaims.map(c => c.text).join(' ')
+            await speakClaim(agentId, textToSpeak)
           } catch (err) {
             if (err.name === 'AbortError') return
             onError?.(err, agentId, round)
@@ -45,8 +75,13 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
       if (!abortController.signal.aborted) {
         onVerdictStart?.()
         try {
-          const verdictText = await callVerdictAgent(topic, allClaims, abortController.signal)
-          onVerdict?.(verdictText)
+          const verdict = await callVerdictAgent(topic, allClaims, abortController.signal)
+          onVerdict?.(verdict)
+
+          if (!abortController.signal.aborted) {
+            const verdictTts = buildVerdictTtsString(verdict)
+            await speakClaim('wildcard', verdictTts)
+          }
         } catch (err) {
           if (err.name !== 'AbortError') {
             onError?.(err, 'wildcard', null)
