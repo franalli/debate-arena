@@ -33,7 +33,7 @@ const ANCHOR = {
   wildcard: LAYOUT.wildcard.anchor
 }
 
-export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, selectedNode, status, claims }) {
+export default function DebateGraph({ graphData, thinkingAgent, speakingAgent, onNodeClick, selectedNode, status, claims }) {
   const svgRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
   const containerRef = useRef(null)
@@ -430,6 +430,39 @@ export default function DebateGraph({ graphData, thinkingAgent, onNodeClick, sel
       svg.selectAll('.agent-anchors circle').style('animation', null)
     }
   }, [thinkingAgent])
+
+  // Speaker rings — emanate from the active speaker's anchor.
+  // Lives in its own effect to avoid triggering the main re-render on every audio start/end.
+  useEffect(() => {
+    const svg = select(svgRef.current)
+    svg.select('.speaker-rings').remove()
+
+    if (!speakingAgent || !LAYOUT[speakingAgent]) return
+
+    const anchor = LAYOUT[speakingAgent].anchor
+    const color = AGENTS[speakingAgent].color
+    const ANCHOR_RADIUS = 40
+
+    const anchorGroupExists = !svg.select('.agent-anchors').empty()
+    const ringsGroup = anchorGroupExists
+      ? svg.insert('g', '.agent-anchors').attr('class', 'speaker-rings')
+      : svg.append('g').attr('class', 'speaker-rings')
+
+    ringsGroup
+      .attr('transform', `translate(${anchor.x},${anchor.y})`)
+      .attr('pointer-events', 'none')
+
+    for (let i = 0; i < 3; i++) {
+      ringsGroup.append('circle')
+        .attr('r', ANCHOR_RADIUS)
+        .attr('fill', 'none')
+        .attr('stroke', color)
+        .attr('stroke-width', 2)
+        .attr('class', `speaker-ring speaker-ring-${i + 1}`)
+    }
+
+    return () => { svg.select('.speaker-rings').remove() }
+  }, [speakingAgent, graphData])
 
   return (
     <div ref={containerRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
