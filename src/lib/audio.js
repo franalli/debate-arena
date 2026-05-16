@@ -7,8 +7,9 @@
 // The debate orchestrator awaits each call before issuing the next.
 
 const MIME = 'audio/mpeg'
-// Per-turn timeout safety net. eleven_v3 has long, sometimes-stalling generation;
-// if onended/onerror/abort never fire, the orchestrator would hang forever.
+// Per-turn timeout safety net. Higher-quality TTS models have long,
+// sometimes-stalling generation; if onended/onerror/abort never fire,
+// the orchestrator would hang forever.
 const TURN_TIMEOUT_MS = 60_000
 
 let audioDisabled = false
@@ -30,7 +31,7 @@ export function primeAudio() {
 
 // Fire-and-forget warmup. Sends a 1-char TTS request and drains the response
 // without playing. Pre-establishes the fetch + EL model so the first real turn
-// dodges the cold-start hit (matters most for slower models like eleven_v3).
+// dodges the cold-start hit (matters most for slower TTS models).
 export function primeTTS() {
   if (audioDisabled) return
   fetch('/api/tts', {
