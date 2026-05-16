@@ -284,7 +284,7 @@ export default function App() {
             href="https://elevenlabs.io"
             target="_blank"
             rel="noopener noreferrer"
-            title="Voice powered by ElevenLabs eleven_v3 model"
+            title="Voice powered by ElevenLabs"
             style={{
               fontSize: '11px',
               color: 'var(--text-muted)',
@@ -298,7 +298,7 @@ export default function App() {
             onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
             onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7' }}
           >
-            Voice by ElevenLabs · eleven_v3
+            Voice by ElevenLabs
           </a>
           <button
             onClick={() => setMuted(m => !m)}
