@@ -462,7 +462,8 @@ export default function DebateGraph({ graphData, thinkingAgent, speakingAgent, o
     }
 
     return () => { svg.select('.speaker-rings').remove() }
-  }, [speakingAgent, graphData])
+  // selectedNode: main effect wipes the SVG when it changes; re-fire here so rings reappear.
+  }, [speakingAgent, graphData, selectedNode])
 
   return (
     <div ref={containerRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
