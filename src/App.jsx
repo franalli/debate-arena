@@ -139,7 +139,11 @@ export default function App() {
       onSpeakingWords: (claimId, words) => {
         setClaimWords(prev => ({ ...prev, [claimId]: words }))
       },
-      getMuted: () => mutedRef.current
+      getMuted: () => mutedRef.current,
+      // ?fresh=1 on the URL bypasses both cache layers (debate text and
+      // TTS audio). Off by default; opt-in for admin/regen flows.
+      fresh: typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('fresh') === '1'
     }, activeMode)
 
     cancelRef.current = cancel
