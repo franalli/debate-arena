@@ -147,6 +147,33 @@ function setupPlaybackPromise(audio, signal) {
   })
 }
 
+// Drain any in-flight sourceBuffer operation (appendBuffer or remove).
+// while, not if: Chrome can spawn an internal remove for buffer eviction
+// between two updateend events, so we re-check after each fire until
+// updating is truly false.
+async function waitUntilIdle(sourceBuffer) {
+  while (sourceBuffer.updating) {
+    await new Promise((r) => sourceBuffer.addEventListener('updateend', r, { once: true }))
+  }
+}
+
+// Defensive appendBuffer: drain, attempt, and retry on InvalidStateError.
+// The retry covers the case where an internal remove kicks in during the
+// micro-window between exiting waitUntilIdle and reaching appendBuffer —
+// catchable only after the fact via the synchronous throw, not preventable.
+async function safeAppend(sourceBuffer, bytes) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await waitUntilIdle(sourceBuffer)
+    try {
+      sourceBuffer.appendBuffer(bytes)
+      return
+    } catch (err) {
+      if (err.name === 'InvalidStateError' && attempt < 2) continue
+      throw err
+    }
+  }
+}
+
 // atob() → Uint8Array. MediaSource needs raw bytes, not base64.
 function base64ToBytes(b64) {
   const binary = atob(b64)
@@ -236,11 +263,8 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
 
         if (obj.audioBase64) {
           const bytes = base64ToBytes(obj.audioBase64)
-          if (sourceBuffer.updating) {
-            await new Promise((r) => sourceBuffer.addEventListener('updateend', r, { once: true }))
-          }
           try {
-            sourceBuffer.appendBuffer(bytes)
+            await safeAppend(sourceBuffer, bytes)
           } catch (err) {
             console.error('[audio] appendBuffer failed:', err.message)
             audioDisabled = true
@@ -263,7 +287,16 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
       }
 
       if (mediaSource.readyState === 'open') {
-        try { mediaSource.endOfStream() } catch { /* ignore */ }
+        // Wait for all pending appendBuffer/remove ops to clear before
+        // signaling end-of-stream — calling endOfStream() while the
+        // sourceBuffer is updating throws InvalidStateError, MSE stays
+        // "open", and `ended` never fires on the audio element.
+        try {
+          await waitUntilIdle(sourceBuffer)
+          mediaSource.endOfStream()
+        } catch (err) {
+          console.warn('[audio] endOfStream failed:', err.message)
+        }
       }
     } catch (err) {
       if (err.name !== 'AbortError') {

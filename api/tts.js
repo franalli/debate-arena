@@ -1,5 +1,5 @@
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
-import { checkOrigin, getIp, checkCharBudget, VALID_AGENT_IDS, ttsCacheKey, getCachedTts, setCachedTts } from './_shared.js'
+import { checkOrigin, getIp, checkCharBudget, VALID_AGENT_IDS, ttsCacheKey, getCachedTts, setCachedTts, deleteCachedTts } from './_shared.js'
 
 const MODEL_ID = process.env.ELEVENLABS_TTS_MODEL || 'eleven_flash_v2_5'
 const OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128'
@@ -53,10 +53,14 @@ export default async function handler(req, res) {
   }
 
   // Cache check BEFORE billing char budget — cached hits cost the user
-  // nothing and don't consume EL quota. ?fresh=1 skips the read but
-  // still writes, refreshing the cache entry for subsequent normals.
-  const cacheKey = ttsCacheKey(text, MODEL_ID, voiceId, OUTPUT_FORMAT)
+  // nothing and don't consume EL quota. ?fresh=1 → admin bypass.
+  // Eagerly DELETE the stored entry so even if the live regen
+  // aborts mid-stream (the write below is gated on !clientGone),
+  // the next normal visitor MISSes and tries again instead of
+  // being served the stale entry the user was trying to overwrite.
+  const cacheKey = ttsCacheKey(text, MODEL_ID, voiceId, OUTPUT_FORMAT, VOICE_MAP[agent].voiceSettings)
   const fresh = req.query?.fresh === '1'
+  if (fresh) await deleteCachedTts(cacheKey)
   const cached = fresh ? null : await getCachedTts(cacheKey)
   if (cached) {
     res.setHeader('Content-Type', 'application/x-ndjson')

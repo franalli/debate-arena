@@ -7,7 +7,9 @@ import { getCurrentPlaybackTime } from '../lib/audio.js'
 // The rAF loop polls currentTime at 60Hz but only triggers a React
 // re-render when the active word INDEX transitions (a few Hz at typical
 // speech rate), so token-tree diffing doesn't run every frame.
-function KaraokeText({ text, words }) {
+// Exported so App's verdict preview can reuse it (shared timing source
+// via getCurrentPlaybackTime — works regardless of where it renders).
+export function KaraokeText({ text, words }) {
   // Tokens preserve whitespace ('foo bar' -> ['foo', ' ', 'bar']) so we
   // can match by word index while keeping the spaces in the DOM. Memo
   // so the regex split doesn't repeat across renders.

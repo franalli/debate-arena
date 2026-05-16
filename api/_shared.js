@@ -3,6 +3,7 @@
 
 import { Redis } from '@upstash/redis'
 import { createHash } from 'node:crypto'
+import { BEHAVIOR_HASH, LLM_SETTINGS } from './_prompts.js'
 
 export const CLAIM_ID_RE = /^[a-z]{3}_r\d{1,2}_\d{1,2}$/
 
@@ -90,8 +91,12 @@ const DEBATE_COOLDOWN_MS        = Number(process.env.DEBATE_COOLDOWN_MS)        
 const TTS_CHARS_IP_DAILY        = Number(process.env.TTS_CHARS_IP_DAILY)        || 20_000
 const TTS_CHARS_GLOBAL_DAILY    = Number(process.env.TTS_CHARS_GLOBAL_DAILY)    || 200_000
 const TTS_MAX_CHARS_PER_REQUEST = Number(process.env.TTS_MAX_CHARS_PER_REQUEST) || 1_000
-const TTS_CACHE_TTL_SECONDS     = Number(process.env.TTS_CACHE_TTL_SECONDS)     || 604_800
-const CACHE_TTL_SECONDS         = Number(process.env.CACHE_TTL_SECONDS)         || 86_400
+// TTL is a storage backstop, not the invalidation mechanism. Both cache
+// keys are content-addressed (BEHAVIOR_HASH for debates, voice settings
+// for TTS) so any input change naturally produces a new key. 30d gives
+// Upstash a slow GC floor without serving stale content for that long.
+const TTS_CACHE_TTL_SECONDS     = Number(process.env.TTS_CACHE_TTL_SECONDS)     || 2_592_000
+const CACHE_TTL_SECONDS         = Number(process.env.CACHE_TTL_SECONDS)         || 2_592_000
 
 const DAY_PLUS_BUFFER_SECONDS = 90_000  // 25h — daily keys auto-expire after the day rolls over
 
@@ -211,45 +216,93 @@ export async function checkCharBudget(ip, chars) {
   }
 }
 
-// ── TTS cache (content-addressed by model + voice + format + text) ───────────
+// ── TTS cache (content-addressed by every EL input) ──────────────────────────
 // Cache value is the FULL NDJSON response body (audio + alignment), so the
 // karaoke pipeline replays identically from cache as it does from EL live.
-// Format is part of the key because changing mp3 bitrate produces different
-// bytes; voice + model already obvious. Auto-expires after TTS_CACHE_TTL_SECONDS.
-export function ttsCacheKey(text, model, voice, format) {
-  const hash = createHash('sha256').update(`${model}|${voice}|${format}|${text}`).digest('hex')
+// Key includes voiceSettings so a tweak to stability/style/speed in VOICE_MAP
+// auto-invalidates without manual cache wipes.
+export function ttsCacheKey(text, model, voice, format, voiceSettings) {
+  const settings = JSON.stringify(voiceSettings || {})
+  const hash = createHash('sha256').update(`${model}|${voice}|${format}|${settings}|${text}`).digest('hex')
   return `tts:cache:${hash}`
 }
 
-// Wrapper avoids Upstash auto-deserialization clobbering single-line
-// NDJSON bodies. A one-chunk body is itself valid JSON ('{"…":"…"}\n'),
-// which the SDK would parse into an object on GET — then res.write(obj)
-// stringifies to '[object Object]' and breaks the client. Wrapping in
-// { body } guarantees we always get an object back and read .body.
-export async function getCachedTts(key) {
-  const redis = getRedis()
-  if (!redis) return null
-  try {
-    const v = await redis.get(key)
-    if (!v) return null
-    if (typeof v === 'string') return v
-    if (typeof v === 'object' && typeof v.body === 'string') return v.body
-    return null
-  } catch (err) {
-    console.error('[tts-cache] get error:', err.message)
-    return null
+// Wrap/unwrap pair guards against Upstash auto-deserialization clobbering
+// single-line NDJSON bodies. A one-chunk body is itself valid JSON
+// ('{"…":"…"}\n'), which the SDK would parse on GET; res.write(obj) then
+// stringifies to '[object Object]' and breaks the client. The { body }
+// wrapper guarantees we always get an object back and read .body.
+function makeCacheStore({ ns, ttl, wrap, unwrap }) {
+  const tag = `[${ns}-cache]`
+  return {
+    get: async (key) => {
+      const redis = getRedis()
+      if (!redis) return null
+      try {
+        const v = await redis.get(key)
+        return v == null ? null : unwrap(v)
+      } catch (err) {
+        console.error(`${tag} get error:`, err.message)
+        return null
+      }
+    },
+    set: async (key, value) => {
+      const redis = getRedis()
+      if (!redis) return
+      try {
+        await redis.set(key, wrap(value), { ex: ttl })
+      } catch (err) {
+        console.error(`${tag} set error:`, err.message)
+      }
+    },
+    del: async (key) => {
+      const redis = getRedis()
+      if (!redis) return
+      try {
+        await redis.del(key)
+      } catch (err) {
+        console.error(`${tag} del error:`, err.message)
+      }
+    }
   }
 }
 
-export async function setCachedTts(key, ndjsonBody) {
-  const redis = getRedis()
-  if (!redis) return
-  try {
-    await redis.set(key, { body: ndjsonBody }, { ex: TTS_CACHE_TTL_SECONDS })
-  } catch (err) {
-    console.error('[tts-cache] set error:', err.message)
-  }
+const ttsStore = makeCacheStore({
+  ns: 'tts',
+  ttl: TTS_CACHE_TTL_SECONDS,
+  wrap: (body) => ({ body }),
+  unwrap: (v) => typeof v === 'string' ? v : (typeof v.body === 'string' ? v.body : null)
+})
+export const getCachedTts = ttsStore.get
+export const setCachedTts = ttsStore.set
+export const deleteCachedTts = ttsStore.del
+
+// LLM response cache (per-call). Key is JSON-stringified inputs hashed
+// with sha256 — BEHAVIOR_HASH covers prompts/sampling; the explicit
+// fields cover call-specific args. Survives partial debates so an
+// aborted run retains the per-claim text it already generated.
+export function llmCacheKey(provider, model, systemPrompt, userMessage, maxTokens) {
+  const inputs = JSON.stringify({
+    behavior: BEHAVIOR_HASH,
+    provider,
+    model,
+    maxTokens,
+    systemPrompt,
+    userMessage
+  })
+  const hash = createHash('sha256').update(inputs).digest('hex')
+  return `llm:cache:${hash}`
 }
+
+const llmStore = makeCacheStore({
+  ns: 'llm',
+  ttl: CACHE_TTL_SECONDS,
+  wrap: (text) => ({ text }),
+  unwrap: (v) => typeof v === 'string' ? v : (typeof v.text === 'string' ? v.text : null)
+})
+export const getCachedLlm = llmStore.get
+export const setCachedLlm = llmStore.set
+export const deleteCachedLlm = llmStore.del
 
 // Single source of truth for fast/deep mode coercion. Anything that isn't
 // the literal 'deep' falls back to 'fast' — matches /api/debate's behavior.
@@ -258,11 +311,13 @@ export function normalizeMode(m) {
 }
 
 // ── Debate cache (text only — claims + verdict) ──────────────────────────────
-// Keyed by every input that affects the LLM output: topic (normalized),
-// mode, all three model IDs, both token caps. Voice/TTS settings are NOT
-// in this key — they only affect audio and are covered by the TTS cache.
-// Topic is trimmed + lowercased so trivial casing/whitespace differences
-// hit the same cache entry; the LLM doesn't care, the cache shouldn't either.
+// Keyed by every input that affects LLM output: topic (normalized), mode,
+// all three model IDs, both token caps, and BEHAVIOR_HASH (fingerprint of
+// every prompt/style/sampling setting in _prompts.js). Any edit there
+// produces a new key → cached entry becomes unreachable, next visitor
+// regenerates. Voice/TTS settings are NOT in this key — they only affect
+// audio and are covered by the TTS cache. Topic is trimmed + lowercased
+// so trivial casing/whitespace differences hit the same cache entry.
 export function debateCacheKey(topic, mode) {
   const inputs = JSON.stringify({
     topic: String(topic).trim().toLowerCase(),
@@ -271,44 +326,23 @@ export function debateCacheKey(topic, mode) {
     openai: process.env.OPENAI_MODEL || '',
     google: process.env.GOOGLE_MODEL || '',
     fast: process.env.FAST_MAX_TOKENS || '',
-    deep: process.env.DEEP_MAX_TOKENS || ''
+    deep: process.env.DEEP_MAX_TOKENS || '',
+    behavior: BEHAVIOR_HASH
   })
   const hash = createHash('sha256').update(inputs).digest('hex')
   return `debate:cache:${hash}`
 }
 
-// Upstash SDK auto-serializes objects on SET and auto-deserializes on GET,
-// so we round-trip naturally without manual JSON.stringify.
-export async function getCachedDebate(key) {
-  const redis = getRedis()
-  if (!redis) return null
-  try {
-    return (await redis.get(key)) || null
-  } catch (err) {
-    console.error('[debate-cache] get error:', err.message)
-    return null
-  }
-}
-
-export async function setCachedDebate(key, debate) {
-  const redis = getRedis()
-  if (!redis) return
-  try {
-    await redis.set(key, debate, { ex: CACHE_TTL_SECONDS })
-  } catch (err) {
-    console.error('[debate-cache] set error:', err.message)
-  }
-}
-
-export async function deleteCachedDebate(key) {
-  const redis = getRedis()
-  if (!redis) return
-  try {
-    await redis.del(key)
-  } catch (err) {
-    console.error('[debate-cache] del error:', err.message)
-  }
-}
+// Upstash auto-serializes the debate object end-to-end; no wrap/unwrap needed.
+const debateStore = makeCacheStore({
+  ns: 'debate',
+  ttl: CACHE_TTL_SECONDS,
+  wrap: (v) => v,
+  unwrap: (v) => v
+})
+export const getCachedDebate = debateStore.get
+export const setCachedDebate = debateStore.set
+export const deleteCachedDebate = debateStore.del
 
 // ── History formatting ────────────────────────────────────────
 export function formatHistory(claims) {
@@ -324,85 +358,101 @@ export function formatHistory(claims) {
   }).join('\n')
 }
 
-export async function callAnthropic(systemPrompt, userMessage, maxTokens) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify({
-      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
-      max_tokens: maxTokens || 500,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }]
-    })
-  })
-  if (!res.ok) {
-    console.error(`[llm] Anthropic error: ${res.status}`)
-    throw new Error('AI service temporarily unavailable')
-  }
-  const data = await res.json()
-  const text = data.content?.[0]?.text
+// Single place for the LLM cache policy. Each provider wrapper supplies
+// just the HTTP-call shape; cache lookup, response validation, and the
+// cache write live here. BEHAVIOR_HASH is folded into the key inside
+// llmCacheKey so prompt/sampling edits invalidate symmetrically.
+async function withLlmCache(provider, model, systemPrompt, userMessage, maxTokens, callProvider) {
+  const cacheKey = llmCacheKey(provider, model, systemPrompt, userMessage, maxTokens)
+  const cached = await getCachedLlm(cacheKey)
+  if (cached) return cached
+  const text = await callProvider()
   if (!text) throw new Error('AI service returned empty response')
+  await setCachedLlm(cacheKey, text)
   return text
 }
 
-export async function callOpenAI(systemPrompt, userMessage, maxTokens) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-4o',
-      max_completion_tokens: maxTokens || 500,
-      // 'low' matches Gemini's thinkingLevel='low' — minimal reasoning, keeps
-      // compute parity for the debate "fair fight." Valid values for gpt-5.5:
-      // 'none' | 'low' | 'medium' | 'high' | 'xhigh'. Chat-only models ignore it.
-      reasoning_effort: 'low',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage }
-      ]
+export async function callAnthropic(systemPrompt, userMessage, maxTokens) {
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'
+  const tokens = maxTokens || 500
+  return withLlmCache('anthropic', model, systemPrompt, userMessage, tokens, async () => {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: tokens,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }]
+      })
     })
+    if (!res.ok) {
+      console.error(`[llm] Anthropic error: ${res.status}`)
+      throw new Error('AI service temporarily unavailable')
+    }
+    const data = await res.json()
+    return data.content?.[0]?.text
   })
-  if (!res.ok) {
-    console.error(`[llm] OpenAI error: ${res.status}`)
-    throw new Error('AI service temporarily unavailable')
-  }
-  const data = await res.json()
-  const text = data.choices?.[0]?.message?.content
-  if (!text) throw new Error('AI service returned empty response')
-  return text
+}
+
+export async function callOpenAI(systemPrompt, userMessage, maxTokens) {
+  const model = process.env.OPENAI_MODEL || 'gpt-4o'
+  const tokens = maxTokens || 500
+  return withLlmCache('openai', model, systemPrompt, userMessage, tokens, async () => {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model,
+        max_completion_tokens: tokens,
+        // 'low' for compute parity with Gemini's thinkingLevel — same "fair fight."
+        reasoning_effort: LLM_SETTINGS.openai.reasoning_effort,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage }
+        ]
+      })
+    })
+    if (!res.ok) {
+      console.error(`[llm] OpenAI error: ${res.status}`)
+      throw new Error('AI service temporarily unavailable')
+    }
+    const data = await res.json()
+    return data.choices?.[0]?.message?.content
+  })
 }
 
 export async function callGoogle(systemPrompt, userMessage, maxTokens) {
   const model = process.env.GOOGLE_MODEL || 'gemini-3.1-pro-preview'
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GOOGLE_API_KEY}`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ parts: [{ text: userMessage }] }],
-      generationConfig: {
-        maxOutputTokens: maxTokens || 500,
-        // Gemini 3.x uses thinkingLevel ('low' | 'medium' | 'high').
-        // 'low' minimizes latency — matches our snappy-debate pacing.
-        thinkingConfig: { thinkingLevel: 'low' }
-      }
+  const tokens = maxTokens || 500
+  return withLlmCache('google', model, systemPrompt, userMessage, tokens, async () => {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GOOGLE_API_KEY}`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ parts: [{ text: userMessage }] }],
+        generationConfig: {
+          maxOutputTokens: tokens,
+          // 'low' for compute parity with OpenAI's reasoning_effort.
+          thinkingConfig: { thinkingLevel: LLM_SETTINGS.google.thinkingLevel }
+        }
+      })
     })
+    if (!res.ok) {
+      console.error(`[llm] Google error: ${res.status}`)
+      throw new Error('AI service temporarily unavailable')
+    }
+    const data = await res.json()
+    const parts = data.candidates?.[0]?.content?.parts || []
+    return parts.filter(p => !p.thought).map(p => p.text).join('')
   })
-  if (!res.ok) {
-    console.error(`[llm] Google error: ${res.status}`)
-    throw new Error('AI service temporarily unavailable')
-  }
-  const data = await res.json()
-  const parts = data.candidates?.[0]?.content?.parts || []
-  const text = parts.filter(p => !p.thought).map(p => p.text).join('')
-  if (!text) throw new Error('AI service returned empty response')
-  return text
 }
