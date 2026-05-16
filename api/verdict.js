@@ -18,8 +18,11 @@ export default async function handler(req, res) {
   if (!checkOrigin(req, res)) return
 
   const ip = getIp(req)
-  const rateLimitError = await checkRateLimit(ip, false)
-  if (rateLimitError) return res.status(429).json({ error: rateLimitError })
+  const rateLimit = await checkRateLimit(ip, false)
+  if (rateLimit) {
+    if (rateLimit.retryAfter) res.setHeader('Retry-After', String(rateLimit.retryAfter))
+    return res.status(429).json({ error: rateLimit.message, code: rateLimit.code, retryAfter: rateLimit.retryAfter })
+  }
 
   const topic = req.body.topic
   if (!validateTopic(topic, res)) return

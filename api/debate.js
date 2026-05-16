@@ -78,15 +78,19 @@ export default async function handler(req, res) {
 
   const ip = getIp(req)
   const round = Number(req.body.round)
-  const isNewDebate = Number.isInteger(round) && round === 1
+  const { agent, history } = req.body
+  // Cooldown gates "starting a new debate" — only the first call of a run (round 1, advocate) counts.
+  // Other round-1 sub-calls share that debate and must not trip the lock.
+  const isNewDebate = Number.isInteger(round) && round === 1 && agent === 'advocate'
 
-  const rateLimitError = await checkRateLimit(ip, isNewDebate)
-  if (rateLimitError) return res.status(429).json({ error: rateLimitError })
+  const rateLimit = await checkRateLimit(ip, isNewDebate)
+  if (rateLimit) {
+    if (rateLimit.retryAfter) res.setHeader('Retry-After', String(rateLimit.retryAfter))
+    return res.status(429).json({ error: rateLimit.message, code: rateLimit.code, retryAfter: rateLimit.retryAfter })
+  }
 
   const topic = req.body.topic
   if (!validateTopic(topic, res)) return
-
-  const { agent, history } = req.body
   const mode = req.body.mode === 'deep' ? 'deep' : 'fast'
   const cfg = MODES[mode]
 

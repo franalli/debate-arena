@@ -114,6 +114,14 @@ export function getIp(req) {
   return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown'
 }
 
+function secondsUntilUtcMidnight() {
+  const now = new Date()
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0)
+  return Math.max(1, Math.ceil((next - now.getTime()) / 1000))
+}
+
+// Returns null on success, or { code, message, retryAfter } on rate-limit hit.
+// code ∈ { 'cooldown', 'ip_daily', 'global_daily' } so the UI can render a typed label.
 export async function checkRateLimit(ip, isNewDebate) {
   const redis = getRedis()
   if (!redis) return null  // fail open: provider-side spend caps are the last line of defense
@@ -129,7 +137,12 @@ export async function checkRateLimit(ip, isNewDebate) {
       const acquired = await redis.set(cdKey, '1', { nx: true, ex: cooldownSeconds })
       if (acquired === null) {
         const ttl = await redis.ttl(cdKey)
-        return `Wait ${ttl > 0 ? ttl : cooldownSeconds}s before starting a new debate.`
+        const wait = ttl > 0 ? ttl : cooldownSeconds
+        return {
+          code: 'cooldown',
+          message: `Wait ${wait}s before starting a new debate (one debate per minute).`,
+          retryAfter: wait
+        }
       }
     }
 
@@ -142,8 +155,20 @@ export async function checkRateLimit(ip, isNewDebate) {
     const ipCount = results[0]
     const globalCount = results[2]
 
-    if (globalCount > RATE_LIMIT_GLOBAL_DAILY) return 'Daily limit reached. Back tomorrow.'
-    if (ipCount > RATE_LIMIT_IP_DAILY) return "You've reached the daily limit. Back tomorrow."
+    if (globalCount > RATE_LIMIT_GLOBAL_DAILY) {
+      return {
+        code: 'global_daily',
+        message: 'Site-wide daily limit reached — service is over capacity. Try again tomorrow.',
+        retryAfter: secondsUntilUtcMidnight()
+      }
+    }
+    if (ipCount > RATE_LIMIT_IP_DAILY) {
+      return {
+        code: 'ip_daily',
+        message: "You've used today's debate quota. Try again tomorrow.",
+        retryAfter: secondsUntilUtcMidnight()
+      }
+    }
     return null
   } catch (err) {
     console.error('[ratelimit] KV error:', err.message)

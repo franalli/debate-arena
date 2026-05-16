@@ -31,7 +31,7 @@ No test suite is configured.
 - `src/lib/agents.js` — Agent config (names, colors, prefixes) + response parsers. Claim IDs follow `{prefix}_r{round}_{index}` pattern (e.g., `adv_r1_1`).
 - `src/lib/debate.js` — Async debate orchestrator with abort support.
 - `src/lib/graphUtils.js` — Graph data builder, scoring (`computeWildcardScore`), round winner logic.
-- `src/components/DebateGraph.jsx` — D3 SVG force graph (800×700 viewbox). Agent anchors (forceX/forceY in `agents.js`): Advocate left, Critic right, Wildcard top-center.
+- `src/components/DebateGraph.jsx` — D3 SVG graph (800×700 viewBox). Fixed agent anchors via `LAYOUT`: Advocate top-center, Critic bottom-left, Wildcard bottom-right.
 
 **Agent colors**: Green (Advocate), Red (Critic), Purple (Wildcard).
 

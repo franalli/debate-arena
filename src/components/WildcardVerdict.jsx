@@ -7,10 +7,6 @@ const WildcardVerdict = forwardRef(function WildcardVerdict({ claims, verdictTex
   const divRef = useRef(null)
   const score = computeWildcardScore(claims)
 
-  const _winner = score.advocate > score.critic ? 'advocate'
-    : score.critic > score.advocate ? 'critic'
-    : null
-
   // Bar proportions based on rounds won
   const total = score.rounds || 1
   const advPct = Math.round((score.advocate / total) * 100)

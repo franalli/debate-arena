@@ -17,7 +17,6 @@ export function buildGraphData(claims) {
       text: c.text,
       round: c.round,
       color: agent.color,
-      dimColor: agent.dimColor,
       radius: 24 + (rebuttalCounts[c.id] || 0) * 5,
       rebuttalsReceived: rebuttalCounts[c.id] || 0
     }

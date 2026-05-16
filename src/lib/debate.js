@@ -4,7 +4,6 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
   const { onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete, onVerdictStart, onVerdict } = callbacks
   const abortController = new AbortController()
   const allClaims = []
-  let claimCounter = 0
 
   const run = async () => {
     try {
@@ -17,18 +16,14 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
           try {
             const rawClaims = await callAgent(agentId, topic, allClaims, round, abortController.signal, mode)
 
-            const newClaims = rawClaims.map((c, i) => {
-              claimCounter++
-              return {
-                id: `${AGENTS[agentId].prefix}_r${round}_${i + 1}`,
-                agentId,
-                round,
-                text: c.text,
-                rebuts: c.rebuts,
-                agrees_with: c.agrees_with || null,
-                index: claimCounter
-              }
-            })
+            const newClaims = rawClaims.map((c, i) => ({
+              id: `${AGENTS[agentId].prefix}_r${round}_${i + 1}`,
+              agentId,
+              round,
+              text: c.text,
+              rebuts: c.rebuts,
+              agrees_with: c.agrees_with || null,
+            }))
 
             allClaims.push(...newClaims)
             onAgentComplete?.(agentId, round, newClaims)
