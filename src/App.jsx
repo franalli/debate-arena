@@ -270,15 +270,24 @@ export default function App() {
           )}
         </div>
 
-        {/* Right: Topic + Fast/Deep + New Debate */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', minWidth: 0, justifySelf: 'end' }}>
+        {/* Right: Topic + Fast/Deep + New Debate.
+            overflow:hidden + nowrap buttons (below) guarantee no content
+            can ever push left into the score column. */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '16px',
+          minWidth: 0,
+          overflow: 'hidden',
+          justifySelf: 'end'
+        }}>
           <span style={{
             fontSize: '13px',
             color: '#fff',
-            // Allow the topic to shrink with ellipsis when the right
-            // section runs out of room (instead of overflowing the score).
+            // Shrinks from a 0 basis so the topic is the first thing
+            // to give up width; the buttons keep their natural sizes.
+            flex: '0 1 350px',
             minWidth: 0,
-            maxWidth: '350px',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap'
@@ -295,6 +304,7 @@ export default function App() {
               color: 'var(--text-muted)',
               textDecoration: 'none',
               whiteSpace: 'nowrap',
+              flexShrink: 0,
               opacity: 0.7,
               transition: 'opacity var(--transition)',
               letterSpacing: '0.02em'
@@ -318,6 +328,7 @@ export default function App() {
               borderRadius: 'var(--radius)',
               color: muted ? 'var(--text-muted)' : 'var(--text-primary)',
               cursor: 'pointer',
+              flexShrink: 0,
               transition: 'all var(--transition)'
             }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--text-primary)' }}
@@ -336,6 +347,8 @@ export default function App() {
                 color: 'var(--critic)',
                 fontSize: '13px',
                 cursor: 'pointer',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
                 transition: 'all var(--transition)'
               }}
               onMouseEnter={(e) => {
@@ -359,6 +372,7 @@ export default function App() {
               : 'var(--border)',
             backgroundSize: '200% 100%',
             animation: status === 'complete' ? 'border-shimmer 4s linear infinite' : 'none',
+            flexShrink: 0
           }}>
             <button
               onClick={handleNewDebate}
@@ -372,6 +386,7 @@ export default function App() {
                 cursor: 'pointer',
                 display: 'block',
                 width: '100%',
+                whiteSpace: 'nowrap'
               }}
             >
               New Debate

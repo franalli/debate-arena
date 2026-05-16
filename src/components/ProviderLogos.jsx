@@ -31,6 +31,15 @@ export function AnthropicLogo({ size = 14 }) {
   )
 }
 
+export function ElevenLabsLogo({ size = 14 }) {
+  // ElevenLabs "II" mark — two vertical bars
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-label="ElevenLabs">
+      <path d="M4.6035 0v24h4.9317V0zm9.8613 0v24h4.9317V0z" />
+    </svg>
+  )
+}
+
 const AGENT_PROVIDER = {
   advocate: GoogleLogo,
   critic: OpenAILogo,
