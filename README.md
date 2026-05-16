@@ -23,11 +23,13 @@ Two debate modes:
 
 Each agent is routed to a different provider so the debate is a genuine cross-lab matchup. All three are env-overridable.
 
-| Role | Voice | Provider | Default model | Env override |
-|------|-------|----------|---------------|--------------|
+| Role | Voice | Provider | Model (production) | Env var |
+|------|-------|----------|--------------------|---------|
 | Advocate | argues *for* | Google | `gemini-3.1-pro-preview` (thinkingLevel: `low`) | `GOOGLE_MODEL` |
-| Critic | argues *against* | OpenAI | `gpt-5.5-turbo` | `OPENAI_MODEL` |
+| Critic | argues *against* | OpenAI | `gpt-5.5-turbo` \* | `OPENAI_MODEL` |
 | Wildcard | challenges + judges | Anthropic | `claude-sonnet-4-6` | `ANTHROPIC_MODEL` |
+
+\* Production value, set via the env var. The hard-coded fallback in `api/_shared.js` is `gpt-4o` (kept lower to avoid surprise costs on a fresh clone with no env override). Anthropic + Google code fallbacks match their production values.
 
 The Wildcard pulls double duty: each round it picks one claim to rebut and one (from the other agent) to agree with. Those `agrees_with` picks tally into the live score, and the same model writes the final verdict via `/api/verdict`.
 
@@ -60,7 +62,7 @@ The Wildcard pulls double duty: each round it picks one claim to rebut and one (
        ▼
   Daily counters: debates (per-IP, global), TTS chars (per-IP, global)
   Locks: per-IP debate cooldown
-  Cache: content-addressed TTS audio (model+voice+text → mp3, 7-day TTL)
+  Cache: content-addressed TTS audio scaffold (helpers ready, not yet wired)
 ```
 
 ### Data Flow
@@ -101,7 +103,7 @@ The voice layer is the moving piece most worth understanding — both halves of 
         ▼
    ElevenLabsClient.textToSpeech.stream(voiceId, {
      text,
-     modelId:      eleven_flash_v2_5,        // ← ELEVENLABS_TTS_MODEL
+     modelId:      eleven_multilingual_v2,   // ← ELEVENLABS_TTS_MODEL
      outputFormat: mp3_44100_128,            // ← ELEVENLABS_OUTPUT_FORMAT
      voiceSettings: {                        // per-agent personality
        stability, similarityBoost, style, useSpeakerBoost, speed
@@ -116,6 +118,10 @@ The voice layer is the moving piece most worth understanding — both halves of 
 ```
 
 Per-agent `voiceSettings` are baked into a `VOICE_MAP` so Advocate/Critic/Wildcard get distinct deliveries (e.g. the Critic is more stable + less expressive; the Wildcard is the most "stylized"). Voice IDs themselves come from your ElevenLabs library via the `VOICE_ID_*` env vars — pick whichever voices fit the roles.
+
+**Model choice — `eleven_multilingual_v2`.** Chosen over the faster `eleven_flash_v2_5` (the code fallback in `api/tts.js`) because it carries emotion and tonal variation noticeably better — the debate sounds like three people arguing, not three TTS voices reading. The trade-off is slightly higher TTFB; streaming + warmup priming (below) hide most of it.
+
+**Output format — `mp3_44100_128`.** Podcast-grade vs the older default `mp3_22050_32` which sounded thin on desktop speakers. **Heads up:** 128 kbps requires ElevenLabs Creator tier or above. On Free/Starter the request 4xx's and the client's `audioDisabled` kill switch falls back to silent debate.
 
 The function also disables Vercel's response cache (`no-store`) because the body is chunked binary; a downstream cache layer would buffer the whole stream before forwarding, which would erase the streaming win.
 
@@ -192,7 +198,7 @@ Either way, the same callback contract fires `onPlaybackStart(agent)` / `onPlayb
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+ (Vercel's current LTS default; Node 18 is deprecated).
 - Vercel CLI (`npm i -g vercel`) — needed for local dev so `/api/*` and the Vite frontend share an origin.
 - API keys: Anthropic, OpenAI, Google, ElevenLabs.
 - An Upstash Redis instance (provisioned via the Vercel Marketplace, or any Upstash account). Optional but recommended — without it, rate limits and TTS budgets fail open and provider spend caps become your only backstop.
@@ -215,10 +221,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 GOOGLE_API_KEY=AIza...
 
-# ── Model overrides (optional; defaults shown) ───────
-ANTHROPIC_MODEL=claude-sonnet-4-6
-OPENAI_MODEL=gpt-5.5-turbo
-GOOGLE_MODEL=gemini-3.1-pro-preview
+# ── Model overrides (production values shown) ───────
+ANTHROPIC_MODEL=claude-sonnet-4-6        # matches code fallback
+OPENAI_MODEL=gpt-5.5-turbo               # code fallback is gpt-4o
+GOOGLE_MODEL=gemini-3.1-pro-preview      # matches code fallback
 
 # ── Token caps per mode (optional) ───────────────────
 FAST_MAX_TOKENS=100
@@ -229,8 +235,8 @@ ELEVENLABS_API_KEY=...
 VOICE_ID_ADVOCATE=...    # pick a voice ID from your EL library
 VOICE_ID_CRITIC=...
 VOICE_ID_WILDCARD=...
-ELEVENLABS_TTS_MODEL=eleven_flash_v2_5      # optional override
-ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128      # optional override
+ELEVENLABS_TTS_MODEL=eleven_multilingual_v2  # better emotion; code fallback is eleven_flash_v2_5
+ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128       # requires EL Creator tier; code fallback matches
 
 # ── Upstash Redis (optional; KV-backed rate limits) ──
 KV_REST_API_URL=https://....upstash.io
@@ -289,7 +295,7 @@ All limits live in Upstash Redis so they're shared across serverless invocations
 
 The cooldown is implemented as `SET NX EX` on `rl:cd:<ip>` — only the *first* call of a new debate (round 1, advocate) tries to acquire it; subsequent agent calls within the same debate skip the lock. Daily counters auto-expire 25h after creation so a slow day naturally rolls over.
 
-The frontend additionally disables the Start button while a debate is running so a user can't trigger parallel debates from one tab.
+The frontend additionally prevents parallel debates structurally: while `status !== 'idle'`, the `TopicInput` view is unmounted entirely, so there's no Start button to click. Returning to it requires clicking **New Debate** in the header, which resets state.
 
 > **Tip:** set spending caps on your LLM and ElevenLabs accounts as the most reliable cost control. The above limits are best-effort; provider-side caps are the last line of defense.
 
