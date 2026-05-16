@@ -94,6 +94,25 @@ input {
   100% { background-position: 200% 50%; }
 }
 
+/* Subtle topographic backdrop drift — different X/Y periods so the
+   motion never traces a straight line. Pure background-position
+   animation: GPU-cheap, no layout, no repaint of the SVG itself. */
+@keyframes topo-drift {
+  0%   { background-position:   0px   0px; }
+  25%  { background-position:  60px  35px; }
+  50%  { background-position:  30px  80px; }
+  75%  { background-position: -40px  45px; }
+  100% { background-position:   0px   0px; }
+}
+
+.topo-backdrop {
+  animation: topo-drift 90s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topo-backdrop { animation: none; }
+}
+
 /* ── TTS speaker pulse rings (used by DebateGraph) ───────────── */
 @keyframes speaker-pulse {
   from { transform: scale(1);   opacity: 0.8; }

@@ -72,13 +72,37 @@ export default function TopicInput({ onStart }) {
 
   return (
     <div style={{
+      position: 'relative',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
       minHeight: '100vh',
-      padding: '2rem'
+      padding: '2rem',
+      overflow: 'hidden'
     }}>
+      {/* Topographic backdrop — fades toward the center so the headline
+          and input remain the focal point. Pointer-events off so it never
+          intercepts clicks on the suggestion buttons. */}
+      <div
+        aria-hidden="true"
+        className="topo-backdrop"
+        style={{
+          position: 'absolute',
+          inset: '-100px',
+          backgroundImage: 'url(/assets/contours.svg)',
+          backgroundSize: '900px 900px',
+          backgroundRepeat: 'repeat',
+          opacity: 0.07,
+          WebkitMaskImage: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.35) 35%, #000 75%)',
+          maskImage: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.35) 35%, #000 75%)',
+          pointerEvents: 'none',
+          zIndex: 0,
+          willChange: 'background-position'
+        }}
+      />
       <div style={{
+        position: 'relative',
+        zIndex: 1,
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
@@ -198,6 +222,8 @@ export default function TopicInput({ onStart }) {
       </div>
 
       <div style={{
+        position: 'relative',
+        zIndex: 1,
         paddingTop: '2rem',
         display: 'flex',
         flexDirection: 'column',
