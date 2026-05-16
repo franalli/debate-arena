@@ -91,6 +91,7 @@ const TTS_CHARS_IP_DAILY        = Number(process.env.TTS_CHARS_IP_DAILY)        
 const TTS_CHARS_GLOBAL_DAILY    = Number(process.env.TTS_CHARS_GLOBAL_DAILY)    || 200_000
 const TTS_MAX_CHARS_PER_REQUEST = Number(process.env.TTS_MAX_CHARS_PER_REQUEST) || 1_000
 const TTS_CACHE_TTL_SECONDS     = Number(process.env.TTS_CACHE_TTL_SECONDS)     || 604_800
+const CACHE_TTL_SECONDS         = Number(process.env.CACHE_TTL_SECONDS)         || 86_400
 
 const DAY_PLUS_BUFFER_SECONDS = 90_000  // 25h — daily keys auto-expire after the day rolls over
 
@@ -210,9 +211,13 @@ export async function checkCharBudget(ip, chars) {
   }
 }
 
-// ── TTS cache (content-addressed by model + voice + text) ────────────────────
-export function ttsCacheKey(text, model, voice) {
-  const hash = createHash('sha256').update(`${model}|${voice}|${text}`).digest('hex')
+// ── TTS cache (content-addressed by model + voice + format + text) ───────────
+// Cache value is the FULL NDJSON response body (audio + alignment), so the
+// karaoke pipeline replays identically from cache as it does from EL live.
+// Format is part of the key because changing mp3 bitrate produces different
+// bytes; voice + model already obvious. Auto-expires after TTS_CACHE_TTL_SECONDS.
+export function ttsCacheKey(text, model, voice, format) {
+  const hash = createHash('sha256').update(`${model}|${voice}|${format}|${text}`).digest('hex')
   return `tts:cache:${hash}`
 }
 
@@ -227,13 +232,55 @@ export async function getCachedTts(key) {
   }
 }
 
-export async function setCachedTts(key, audioBase64) {
+export async function setCachedTts(key, ndjsonBody) {
   const redis = getRedis()
   if (!redis) return
   try {
-    await redis.set(key, audioBase64, { ex: TTS_CACHE_TTL_SECONDS })
+    await redis.set(key, ndjsonBody, { ex: TTS_CACHE_TTL_SECONDS })
   } catch (err) {
     console.error('[tts-cache] set error:', err.message)
+  }
+}
+
+// ── Debate cache (text only — claims + verdict) ──────────────────────────────
+// Keyed by every input that affects the LLM output: topic, mode, all three
+// model IDs, both token caps. Voice/TTS settings are NOT part of this key
+// because they don't affect the text — they're handled by the separate TTS
+// cache layer. Auto-expires after CACHE_TTL_SECONDS; any env-var bump
+// changes the hash and naturally misses, forcing a fresh debate.
+export function debateCacheKey(topic, mode) {
+  const inputs = JSON.stringify({
+    topic,
+    mode,
+    anthropic: process.env.ANTHROPIC_MODEL || '',
+    openai: process.env.OPENAI_MODEL || '',
+    google: process.env.GOOGLE_MODEL || '',
+    fast: process.env.FAST_MAX_TOKENS || '',
+    deep: process.env.DEEP_MAX_TOKENS || ''
+  })
+  const hash = createHash('sha256').update(inputs).digest('hex')
+  return `debate:cache:${hash}`
+}
+
+export async function getCachedDebate(key) {
+  const redis = getRedis()
+  if (!redis) return null
+  try {
+    const v = await redis.get(key)
+    return v ? (typeof v === 'string' ? JSON.parse(v) : v) : null
+  } catch (err) {
+    console.error('[debate-cache] get error:', err.message)
+    return null
+  }
+}
+
+export async function setCachedDebate(key, debate) {
+  const redis = getRedis()
+  if (!redis) return
+  try {
+    await redis.set(key, JSON.stringify(debate), { ex: CACHE_TTL_SECONDS })
+  } catch (err) {
+    console.error('[debate-cache] set error:', err.message)
   }
 }
 
