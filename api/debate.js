@@ -5,7 +5,7 @@ const MODES = {
   fast: {
     maxRounds: 3,
     maxTokens: Number(process.env.FAST_MAX_TOKENS) || 100,
-    style: `CRITICAL: Respond with exactly ONE claim. Maximum 12 words. Newspaper headline style. Always end with a full stop.`
+    style: `CRITICAL: Respond with exactly ONE claim. Maximum 24 words. Newspaper headline style. Always end with a full stop.`
   },
   deep: {
     maxRounds: 3,
