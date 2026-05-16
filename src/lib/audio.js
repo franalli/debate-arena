@@ -7,6 +7,9 @@
 // The debate orchestrator awaits each call before issuing the next.
 
 const MIME = 'audio/mpeg'
+// Per-turn timeout safety net. eleven_v3 has long, sometimes-stalling generation;
+// if onended/onerror/abort never fire, the orchestrator would hang forever.
+const TURN_TIMEOUT_MS = 60_000
 
 let audioDisabled = false
 let currentAudio = null
@@ -23,6 +26,25 @@ export function primeAudio() {
     const a = new Audio(SILENT_MP3)
     a.play().catch(() => {})
   } catch { /* ignore */ }
+}
+
+// Fire-and-forget warmup. Sends a 1-char TTS request and drains the response
+// without playing. Pre-establishes the fetch + EL model so the first real turn
+// dodges the cold-start hit (matters most for slower models like eleven_v3).
+export function primeTTS() {
+  if (audioDisabled) return
+  fetch('/api/tts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'advocate', text: '.' })
+  }).then(async (response) => {
+    if (!response.ok || !response.body) return
+    const reader = response.body.getReader()
+    while (true) {
+      const { done } = await reader.read()
+      if (done) break
+    }
+  }).catch(() => { /* ignore — best-effort warmup */ })
 }
 
 export function resetAudio() {
@@ -88,12 +110,12 @@ function makeEndFirer(onPlaybackEnd, agent) {
   }
 }
 
-// Returns a Promise that resolves on natural end, error, or signal abort.
-// Also sets currentResolve so stopAudio() can unblock the await.
+// Returns a Promise that resolves on natural end, error, signal abort, or
+// TURN_TIMEOUT_MS elapsed (safety net for stalled streams). Also sets
+// currentResolve so stopAudio() can unblock the await.
 function setupPlaybackPromise(audio, signal) {
   return new Promise((resolve) => {
     currentResolve = resolve
-    // addEventListener('abort', ...) does NOT fire if signal is already aborted.
     if (signal?.aborted) { resolve(); return }
     audio.onended = () => resolve()
     audio.onerror = () => resolve()
@@ -101,6 +123,13 @@ function setupPlaybackPromise(audio, signal) {
       try { audio.pause() } catch { /* ignore */ }
       resolve()
     }, { once: true })
+    setTimeout(() => {
+      if (currentResolve === resolve) {
+        console.warn('[audio] turn timeout reached, force-resolving')
+        try { audio.pause() } catch { /* ignore */ }
+        resolve()
+      }
+    }, TURN_TIMEOUT_MS)
   })
 }
 
