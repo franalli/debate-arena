@@ -286,6 +286,10 @@ export async function callOpenAI(systemPrompt, userMessage, maxTokens) {
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-4o',
       max_completion_tokens: maxTokens || 500,
+      // 'low' matches Gemini's thinkingLevel='low' — minimal reasoning, keeps
+      // compute parity for the debate "fair fight." Valid values for gpt-5.5:
+      // 'none' | 'low' | 'medium' | 'high' | 'xhigh'. Chat-only models ignore it.
+      reasoning_effort: 'low',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage }
@@ -313,7 +317,9 @@ export async function callGoogle(systemPrompt, userMessage, maxTokens) {
       contents: [{ parts: [{ text: userMessage }] }],
       generationConfig: {
         maxOutputTokens: maxTokens || 500,
-        thinkingConfig: { thinkingBudget: 0 }
+        // Gemini 3.x uses thinkingLevel ('low' | 'medium' | 'high').
+        // 'low' minimizes latency — matches our snappy-debate pacing.
+        thinkingConfig: { thinkingLevel: 'low' }
       }
     })
   })
