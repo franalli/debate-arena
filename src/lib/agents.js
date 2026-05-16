@@ -49,10 +49,29 @@ function parseAgentResponse(raw) {
       }]
     }
   } catch {
-    // Fallback: wrap raw text as single claim
+    // Truncated/malformed JSON — try to salvage the partial "text" field
+    // and the rebuts/agrees_with refs via regex before the response stops.
+    const textMatch = raw.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)/)
+    if (textMatch && textMatch[1]) {
+      const rebutsMatch = raw.match(/"rebuts"\s*:\s*"([^"]+)"/)
+      const agreesMatch = raw.match(/"agrees_with"\s*:\s*"([^"]+)"/)
+      // Un-escape common JSON-escaped chars in the partial text
+      const cleaned = textMatch[1]
+        .replace(/\\"/g, '"').replace(/\\n/g, ' ').replace(/\\\\/g, '\\')
+      return [{
+        text: cleaned,
+        rebuts: rebutsMatch ? rebutsMatch[1] : null,
+        agrees_with: agreesMatch ? agreesMatch[1] : null
+      }]
+    }
   }
 
-  return [{ text: raw.trim(), rebuts: null, agrees_with: null }]
+  // Last resort: strip fences from raw and use as plain text claim.
+  // Never return the markdown-wrapped JSON literal to the UI.
+  const cleaned = raw.trim()
+    .replace(/^```(?:json)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+  return [{ text: cleaned, rebuts: null, agrees_with: null }]
 }
 
 // ── Public API ──
