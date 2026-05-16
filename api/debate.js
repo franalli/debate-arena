@@ -1,4 +1,4 @@
-import { formatHistory, callAnthropic, callOpenAI, callGoogle, CLAIM_ID_RE, checkOrigin, validateTopic, validateHistory, checkRateLimit, getIp } from './_shared.js'
+import { formatHistory, callAnthropic, callOpenAI, callGoogle, CLAIM_ID_RE, checkOrigin, validateTopic, validateHistory, checkRateLimit, getIp, VALID_AGENT_IDS } from './_shared.js'
 
 // ── Mode configs ─────────────────────────────────────────────
 const MODES = {
@@ -94,7 +94,7 @@ export default async function handler(req, res) {
   const mode = req.body.mode === 'deep' ? 'deep' : 'fast'
   const cfg = MODES[mode]
 
-  if (!['advocate', 'critic', 'wildcard'].includes(agent)) return res.status(400).json({ error: 'Invalid agent' })
+  if (!VALID_AGENT_IDS.has(agent)) return res.status(400).json({ error: 'Invalid agent' })
   if (!Number.isInteger(round) || round < 1 || round > cfg.maxRounds) return res.status(400).json({ error: 'Invalid round' })
   if (!validateHistory(history, round, agent, res)) return
 
