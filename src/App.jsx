@@ -10,6 +10,7 @@ import RoundToasts from './components/RoundToasts.jsx'
 import { runDebate } from './lib/debate.js'
 import { buildGraphData, computeWildcardScore } from './lib/graphUtils.js'
 import { AGENTS } from './lib/agents.js'
+import { useIsMobile } from './lib/useMediaQuery.js'
 
 const RATE_LIMIT_LABELS = {
   cooldown: 'Cooldown',
@@ -18,6 +19,7 @@ const RATE_LIMIT_LABELS = {
 }
 
 export default function App() {
+  const isMobile = useIsMobile()
   const [topic, setTopic] = useState('')
   const [status, setStatus] = useState('idle') // idle | running | complete | error
   const [mode, setMode] = useState('fast')
@@ -37,6 +39,12 @@ export default function App() {
   const [muted, setMuted] = useState(false)
   const mutedRef = useRef(false)
   const [speakingAgent, setSpeakingAgent] = useState(null)
+  // Karaoke state: which claim is being spoken, and per-claim word
+  // timings ({ [claimId]: [{ word, start, end }] }). currentTime is
+  // polled via getCurrentPlaybackTime() in Transcript on rAF so we
+  // don't push 60 setStates/sec through the App tree.
+  const [speakingClaimId, setSpeakingClaimId] = useState(null)
+  const [claimWords, setClaimWords] = useState({})
 
   useEffect(() => {
     mutedRef.current = muted
@@ -120,11 +128,16 @@ export default function App() {
         setSpeakingAgent(null)
         setStatus('complete')
       },
-      onSpeakingStart: (agentId) => {
+      onSpeakingStart: (agentId, claimId) => {
         setSpeakingAgent(agentId)
+        setSpeakingClaimId(claimId)
       },
       onSpeakingEnd: () => {
         setSpeakingAgent(null)
+        setSpeakingClaimId(null)
+      },
+      onSpeakingWords: (claimId, words) => {
+        setClaimWords(prev => ({ ...prev, [claimId]: words }))
       },
       getMuted: () => mutedRef.current
     }, activeMode)
@@ -137,6 +150,7 @@ export default function App() {
     cancelRef.current = null
     setThinkingAgent(null)
     setSpeakingAgent(null)
+    setSpeakingClaimId(null)
     setStatus('complete')
   }
 
@@ -149,6 +163,8 @@ export default function App() {
     setGraphData({ nodes: [], links: [] })
     setThinkingAgent(null)
     setSpeakingAgent(null)
+    setSpeakingClaimId(null)
+    setClaimWords({})
     setVerdictText(null)
     setRoundResults([])
     setError(null)
@@ -188,37 +204,68 @@ export default function App() {
     return <TopicInput onStart={startDebate} />
   }
 
+  const scoreEl = liveScore && (
+    <span
+      onClick={liveScore.isComplete ? () => {
+        verdictRef.current?.expand()
+        setTimeout(() => verdictRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+      } : undefined}
+      style={{
+        fontSize: isMobile ? '15px' : '22px',
+        fontWeight: 700,
+        color: liveScore.color,
+        cursor: liveScore.isComplete ? 'pointer' : 'default',
+        textDecoration: liveScore.isComplete ? 'underline' : 'none',
+        textDecorationStyle: 'dotted',
+        textUnderlineOffset: '3px',
+        whiteSpace: 'nowrap',
+        pointerEvents: liveScore.isComplete ? 'auto' : 'none'
+      }}
+    >
+      {liveScore.label}
+    </span>
+  )
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
-      {/* Header — 3-column grid so the score is truly centered and the
-          right section can shrink the topic when space is tight */}
+      {/* Header — desktop is a 3-column grid (centered score); mobile
+          drops the title text + ElevenLabs link and tightens spacing
+          so the controls fit on a 390px viewport. */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: '1fr auto 1fr',
+        gridTemplateColumns: isMobile ? 'auto 1fr auto' : '1fr auto 1fr',
         alignItems: 'center',
-        gap: '16px',
+        gap: isMobile ? '8px' : '16px',
         height: '48px',
-        padding: '0 24px',
+        padding: isMobile ? '0 12px' : '0 24px',
         borderBottom: '1px solid var(--border)',
         background: 'var(--bg-secondary)',
         flexShrink: 0
       }}>
-        {/* Left: Title + Rounds */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, justifySelf: 'start' }}>
-          <h1 style={{
-            fontSize: '16px',
-            fontWeight: 700,
-            background: 'linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic))',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            margin: 0
-          }}>
-            ⚔ Debate Arena
-          </h1>
+        {/* Left: Title (desktop only) + Rounds */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: isMobile ? '6px' : '12px',
+          minWidth: 0,
+          justifySelf: 'start'
+        }}>
+          {!isMobile && (
+            <h1 style={{
+              fontSize: '16px',
+              fontWeight: 700,
+              background: 'linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic))',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              margin: 0
+            }}>
+              ⚔ Debate Arena
+            </h1>
+          )}
 
-          {/* Round dots + label */}
+          {/* Round dots + label — drop dots on mobile, keep "1/3" */}
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-            {Array.from({ length: maxRounds }, (_, i) => (
+            {!isMobile && Array.from({ length: maxRounds }, (_, i) => (
               <span
                 key={i}
                 style={{
@@ -234,72 +281,59 @@ export default function App() {
                 }}
               />
             ))}
-            <span style={{ fontSize: '13px', color: 'var(--text-secondary)', marginLeft: '4px' }}>
-              Round {Math.min(currentRound, maxRounds)}/{maxRounds}
+            <span style={{
+              fontSize: '13px',
+              color: 'var(--text-secondary)',
+              marginLeft: isMobile ? 0 : '4px',
+              whiteSpace: 'nowrap'
+            }}>
+              {isMobile
+                ? `R${Math.min(currentRound, maxRounds)}/${maxRounds}`
+                : `Round ${Math.min(currentRound, maxRounds)}/${maxRounds}`}
             </span>
           </div>
         </div>
 
-        {/* Center: Score — sits in the natural-width middle column,
-            so it stays visually centered regardless of side widths */}
+        {/* Center: Score — desktop only. Mobile renders the score in
+            its own band below to give it room to breathe. */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          pointerEvents: liveScore?.isComplete ? 'auto' : 'none'
+          justifyContent: 'center'
         }}>
-          {liveScore && (
-            <span
-              onClick={liveScore.isComplete ? () => {
-                verdictRef.current?.expand()
-                setTimeout(() => verdictRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
-              } : undefined}
-              style={{
-                fontSize: '22px',
-                fontWeight: 700,
-                color: liveScore.color,
-                cursor: liveScore.isComplete ? 'pointer' : 'default',
-                textDecoration: liveScore.isComplete ? 'underline' : 'none',
-                textDecorationStyle: 'dotted',
-                textUnderlineOffset: '3px',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              {liveScore.label}
-            </span>
-          )}
+          {!isMobile && scoreEl}
         </div>
 
-        {/* Right: voice attribution + Mute + Stop + New Debate.
-            Topic moved out of the header (rendered in its own band below)
-            so it can never clash with the centered score. */}
+        {/* Right: voice attribution (desktop) + Mute + Stop + New Debate */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '16px',
+          gap: isMobile ? '6px' : '16px',
           minWidth: 0,
           justifySelf: 'end'
         }}>
-          <a
-            href="https://elevenlabs.io"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Voice powered by ElevenLabs"
-            style={{
-              fontSize: '11px',
-              color: 'var(--text-muted)',
-              textDecoration: 'none',
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-              opacity: 0.7,
-              transition: 'opacity var(--transition)',
-              letterSpacing: '0.02em'
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7' }}
-          >
-            Voice by ElevenLabs
-          </a>
+          {!isMobile && (
+            <a
+              href="https://elevenlabs.io"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Voice powered by ElevenLabs"
+              style={{
+                fontSize: '11px',
+                color: 'var(--text-muted)',
+                textDecoration: 'none',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                opacity: 0.7,
+                transition: 'opacity var(--transition)',
+                letterSpacing: '0.02em'
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = '1' }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7' }}
+            >
+              Voice by ElevenLabs
+            </a>
+          )}
           <button
             onClick={() => setMuted(m => !m)}
             aria-label={muted ? 'Unmute' : 'Mute'}
@@ -308,7 +342,7 @@ export default function App() {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              padding: '0.35rem',
+              padding: isMobile ? '0.3rem' : '0.35rem',
               background: 'transparent',
               border: '1px solid var(--border)',
               borderRadius: 'var(--radius)',
@@ -320,18 +354,18 @@ export default function App() {
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--text-primary)' }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)' }}
           >
-            {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+            {muted ? <VolumeX size={isMobile ? 14 : 16} /> : <Volume2 size={isMobile ? 14 : 16} />}
           </button>
           {status === 'running' && (
             <button
               onClick={handleStop}
               style={{
-                padding: '0.4rem 0.8rem',
+                padding: isMobile ? '0.3rem 0.6rem' : '0.4rem 0.8rem',
                 background: 'var(--critic-dim)',
                 border: '1px solid var(--critic)',
                 borderRadius: 'var(--radius)',
                 color: 'var(--critic)',
-                fontSize: '13px',
+                fontSize: isMobile ? '12px' : '13px',
                 cursor: 'pointer',
                 flexShrink: 0,
                 whiteSpace: 'nowrap',
@@ -363,28 +397,44 @@ export default function App() {
             <button
               onClick={handleNewDebate}
               style={{
-                padding: '0.3rem 0.7rem',
+                padding: isMobile ? '0.25rem 0.55rem' : '0.3rem 0.7rem',
                 background: 'var(--bg-card)',
                 border: 'none',
                 borderRadius: 'calc(var(--radius) - 1px)',
                 color: 'white',
-                fontSize: '13px',
+                fontSize: isMobile ? '12px' : '13px',
                 cursor: 'pointer',
                 display: 'block',
                 width: '100%',
                 whiteSpace: 'nowrap'
               }}
             >
-              New Debate
+              {isMobile ? 'New' : 'New Debate'}
             </button>
           </div>
         </div>
       </div>
 
+      {/* Mobile-only score band — gives the score its own row so it
+          doesn't have to compete with controls for header width. */}
+      {isMobile && liveScore && (
+        <div style={{
+          padding: '0.4rem 12px',
+          background: 'var(--bg-secondary)',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          flexShrink: 0
+        }}>
+          {scoreEl}
+        </div>
+      )}
+
       {/* Topic band — own row below the header so the centered score
           can never clash with it. Single line with ellipsis truncation. */}
       <div style={{
-        padding: '0.5rem 24px',
+        padding: isMobile ? '0.4rem 12px' : '0.5rem 24px',
         background: 'var(--bg-secondary)',
         borderBottom: '1px solid var(--border)',
         fontSize: '13px',
@@ -418,7 +468,7 @@ export default function App() {
       {/* Error banner */}
       {error && (
         <div style={{
-          padding: '0.6rem 1.5rem',
+          padding: isMobile ? '0.5rem 12px' : '0.6rem 1.5rem',
           background: 'var(--critic-dim)',
           borderBottom: '1px solid var(--critic)',
           color: 'var(--critic)',
@@ -426,6 +476,7 @@ export default function App() {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
+          gap: '0.5rem',
           flexShrink: 0
         }}>
           <span>
@@ -451,33 +502,34 @@ export default function App() {
         </div>
       )}
 
-      {/* Main content — horizontal split */}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        {/* Left: Transcript (35%) */}
+      {/* Main content — desktop: horizontal split (transcript left,
+          graph right). Mobile: vertical stack (graph on top, transcript
+          below) so the transcript gets full width and doesn't wrap
+          one word per line. */}
+      <div style={{
+        display: 'flex',
+        flex: 1,
+        minHeight: 0,
+        overflow: 'hidden',
+        flexDirection: isMobile ? 'column' : 'row'
+      }}>
+        {/* Graph + Legend + Verdict — first on mobile, second on desktop */}
         <div style={{
-          width: '35%',
-          flexShrink: 0,
+          flex: isMobile ? '0 0 auto' : 1,
           display: 'flex',
           flexDirection: 'column',
-          borderRight: '1px solid var(--border)',
-          overflow: 'hidden'
+          minWidth: 0,
+          minHeight: 0,
+          overflow: 'hidden',
+          order: isMobile ? 1 : 2
         }}>
-          {thinkingAgent && (
-            <div style={{ padding: '0.5rem 1rem', flexShrink: 0 }}>
-              <ThinkingIndicator agentId={thinkingAgent} />
-            </div>
-          )}
-          <Transcript
-            claims={allClaims}
-            onClaimClick={handleClaimClick}
-            selectedNode={selectedNode}
-          />
-        </div>
-
-        {/* Right: Graph + Legend + Verdict (65%) */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
           {/* Graph area */}
-          <div style={{ minHeight: '40vh', flex: 1, position: 'relative' }}>
+          <div style={{
+            minHeight: isMobile ? '38vh' : '40vh',
+            height: isMobile ? '38vh' : 'auto',
+            flex: isMobile ? '0 0 auto' : 1,
+            position: 'relative'
+          }}>
             <DebateGraph
               graphData={graphData}
               thinkingAgent={thinkingAgent}
@@ -493,8 +545,38 @@ export default function App() {
           {/* Legend bar — outside SVG, between graph and verdict */}
           <DebateGraph.Legend />
 
-          {/* Wildcard verdict */}
-          {status === 'complete' && allClaims.length > 0 && (
+          {/* Wildcard verdict — on mobile, render under transcript instead */}
+          {!isMobile && status === 'complete' && allClaims.length > 0 && (
+            <WildcardVerdict ref={verdictRef} claims={allClaims} verdictText={verdictText} />
+          )}
+        </div>
+
+        {/* Transcript — second on mobile (below graph), first on desktop (left) */}
+        <div style={{
+          width: isMobile ? '100%' : '35%',
+          flex: isMobile ? 1 : '0 0 35%',
+          flexShrink: 0,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          borderRight: isMobile ? 'none' : '1px solid var(--border)',
+          borderTop: isMobile ? '1px solid var(--border)' : 'none',
+          overflow: 'hidden',
+          order: isMobile ? 2 : 1
+        }}>
+          {thinkingAgent && (
+            <div style={{ padding: '0.5rem 1rem', flexShrink: 0 }}>
+              <ThinkingIndicator agentId={thinkingAgent} />
+            </div>
+          )}
+          <Transcript
+            claims={allClaims}
+            onClaimClick={handleClaimClick}
+            selectedNode={selectedNode}
+            speakingClaimId={speakingClaimId}
+            claimWords={claimWords}
+          />
+          {isMobile && status === 'complete' && allClaims.length > 0 && (
             <WildcardVerdict ref={verdictRef} claims={allClaims} verdictText={verdictText} />
           )}
         </div>

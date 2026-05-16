@@ -12,7 +12,7 @@ function buildVerdictTtsString(verdict) {
 export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
   const {
     onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete,
-    onVerdictStart, onVerdict, onSpeakingStart, onSpeakingEnd,
+    onVerdictStart, onVerdict, onSpeakingStart, onSpeakingEnd, onSpeakingWords,
     getMuted = () => false
   } = callbacks
   const abortController = new AbortController()
@@ -20,14 +20,17 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
 
   resetAudio()
 
-  const speakClaim = async (agentId, text) => {
+  // claimId disambiguates which claim's words are streaming back.
+  // Verdict speech uses claimId='verdict' so the UI can highlight it too.
+  const speakClaim = async (agentId, claimId, text) => {
     const toSpeak = text.length > MAX_TTS_CHARS ? text.slice(0, MAX_TTS_CHARS) : text
     await playAudioStream(toSpeak, {
       agent: agentId,
       signal: abortController.signal,
       getMuted,
-      onPlaybackStart: () => onSpeakingStart?.(agentId),
-      onPlaybackEnd: () => onSpeakingEnd?.(agentId)
+      onPlaybackStart: () => onSpeakingStart?.(agentId, claimId),
+      onPlaybackEnd: () => onSpeakingEnd?.(agentId, claimId),
+      onWords: (words) => onSpeakingWords?.(claimId, words)
     })
   }
 
@@ -54,8 +57,11 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
             allClaims.push(...newClaims)
             onAgentComplete?.(agentId, round, newClaims)
 
+            // Each round has exactly one claim per agent (parser enforces).
+            // Use that claim's id as the speakingClaimId so the UI can match it.
+            const speakingId = newClaims[0]?.id
             const textToSpeak = newClaims.map(c => c.text).join(' ')
-            await speakClaim(agentId, textToSpeak)
+            await speakClaim(agentId, speakingId, textToSpeak)
           } catch (err) {
             if (err.name === 'AbortError') return
             onError?.(err, agentId, round)
@@ -81,7 +87,7 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
 
           if (!abortController.signal.aborted) {
             const verdictTts = buildVerdictTtsString(verdict)
-            await speakClaim('wildcard', verdictTts)
+            await speakClaim('wildcard', 'verdict', verdictTts)
           }
         } catch (err) {
           if (err.name !== 'AbortError') {

@@ -60,19 +60,22 @@ export default async function handler(req, res) {
     let clientGone = false
     req.on('close', () => { clientGone = true })
 
-    const audioStream = await getClient().textToSpeech.stream(voiceId, {
+    // streamWithTimestamps emits { audioBase64, alignment } objects per
+    // chunk. We re-serialize as NDJSON so the client can demultiplex
+    // audio (-> MediaSource) from word-timing data (-> karaoke UI).
+    const audioStream = await getClient().textToSpeech.streamWithTimestamps(voiceId, {
       text,
       modelId: MODEL_ID,
       outputFormat: OUTPUT_FORMAT,
       voiceSettings: VOICE_MAP[agent].voiceSettings
     })
 
-    res.setHeader('Content-Type', 'audio/mpeg')
+    res.setHeader('Content-Type', 'application/x-ndjson')
     res.setHeader('Cache-Control', 'no-store')
 
     for await (const chunk of audioStream) {
       if (clientGone) break
-      res.write(chunk)
+      res.write(JSON.stringify(chunk) + '\n')
     }
     res.end()
   } catch (err) {
