@@ -12,11 +12,17 @@
 //
 // Prefixed with _ so Vercel doesn't expose this as an endpoint.
 
-// Separator pattern: trailing \n is optional so the meta block can begin
-// either on the next line or immediately. We don't tolerate dash-count
-// drift here — the prompt is explicit; the offline parser in
-// src/lib/agents.js is the safety net for malformed responses.
-const SEP_RE = /\n---META---\n?/
+// Lenient about delimiter between TEXT and the prose body — colon,
+// whitespace, or newline. Strict on the keyword itself; "TEXTUAL" won't
+// match (no [\s:] after TEXT).
+const TEXT_PREFIX_RE = /^\s*TEXT[\s:]+/i
+
+// Separator pattern: surrounding whitespace (or none) is tolerated so a
+// response like "...prose. ---META--- {…}" parses cleanly even when the
+// LLM drops the expected newline framing. Dash count stays strict —
+// the offline parser in src/lib/agents.js is the safety net for fully
+// malformed responses.
+const SEP_RE = /\s*---META---\s*/
 
 // Must exceed the separator length, otherwise a partial separator at the
 // tail of pendingText could be flushed to the chunker before we recognize
@@ -51,7 +57,7 @@ export function parseMetaTrailer(metaRaw) {
 // to dispatch chunks and report claim_complete with the right fields.
 export function extractFromRawLlm(raw) {
   if (!raw) return { fullText: '', meta: { rebuts: null, agrees_with: null } }
-  const m = raw.match(/^\s*TEXT:\s*\n?/i)
+  const m = raw.match(TEXT_PREFIX_RE)
   if (!m) {
     // No prefix — treat the whole response as prose. parseAgentResponse
     // in src/lib/agents.js does the same fallback.
@@ -88,7 +94,7 @@ export function createStateMachine({ onProse }) {
 
     if (state.mode === 'IGNORE') {
       state.prefixBuf += token
-      const m = state.prefixBuf.match(/^\s*TEXT:\s*\n?/i)
+      const m = state.prefixBuf.match(TEXT_PREFIX_RE)
       if (!m) return
       const remaining = state.prefixBuf.slice(m[0].length)
       state.prefixBuf = ''

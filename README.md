@@ -11,11 +11,12 @@ Three AI models debate any topic in real time. A live D3 argument graph shows ho
    - 🟢 **Advocate** (Gemini 3.1 Pro) argues *for* the statement.
    - 🔴 **Critic** (GPT-5.5) argues *against* the statement.
    - 🟣 **Wildcard** (Claude Sonnet 4.6) challenges both sides, then judges each round.
-3. **A force-directed graph builds in real time.** Nodes are claims, edges show the Wildcard's rebuttals and agreements. Advocate↔Critic attacks are omitted as predictable.
+3. **A force-directed graph builds in real time.** Nodes are claims, edges show the Wildcard's rebuttals and agreements. Advocate↔Critic attacks are skipped because they're predictable.
 4. **Each claim is spoken** via ElevenLabs as the LLM is still writing it: prose tokens feed a sentence chunker, each sentence streams to ElevenLabs, audio frames pipe back through one NDJSON response with **word-level karaoke** alignment for the transcript.
 5. **The Wildcard delivers a verdict** covering the strongest arguments and the loser's biggest gap, also spoken with per-word karaoke and a "is reading debate verdict" indicator.
 6. **Already-debated topics replay instantly** from cache: same audio, same graph, same karaoke, no LLM or TTS calls.
 7. **Aborted debates retain their work.** Per-call LLM responses and per-claim TTS streams are independently cached, so partial runs aren't wasted.
+8. **Stop and resume.** Hitting **Stop** mid-debate leaves the captured claims on screen. A **Resume** button appears next to **New Debate** and picks up from the next unfilled slot, reusing every cached LLM response and TTS stream from the partial run.
 
 Two debate modes:
 - **Fast.** 24-word headline-style claims, ~100 tokens per turn.
@@ -23,11 +24,11 @@ Two debate modes:
 
 ## Models
 
-Each agent is routed to a different provider so the debate is a cross-lab matchup. All three are env-overridable. Where the provider exposes a knob, reasoning effort is pegged to `low` for "fair fight" compute parity (Google `thinkingLevel: 'low'` and OpenAI `reasoning_effort: 'low'`). Anthropic Sonnet 4.6 has no equivalent parameter, so it runs at its default reasoning level.
+Each agent is routed to a different provider so the debate is a cross-lab matchup. All three are env-overridable. Where the provider exposes a knob, reasoning is pinned to the lowest setting for a "fair fight" on compute (OpenAI `reasoning_effort: 'low'`, Google `thinkingBudget: 0`). Anthropic Sonnet 4.6 has no equivalent parameter, so it runs at its default reasoning level.
 
 | Role | Voice | Provider | Model (production) | Env var |
 |------|-------|----------|--------------------|---------|
-| Advocate | argues *for* | Google | `gemini-3.1-pro-preview` (thinkingLevel: `low`) | `GOOGLE_MODEL` |
+| Advocate | argues *for* | Google | `gemini-3.1-pro-preview` (thinkingBudget: `0`) | `GOOGLE_MODEL` |
 | Critic | argues *against* | OpenAI | `gpt-5.5-turbo` (reasoning_effort: `low`) \* | `OPENAI_MODEL` |
 | Wildcard | challenges + judges | Anthropic | `claude-sonnet-4-6` | `ANTHROPIC_MODEL` |
 
@@ -93,10 +94,10 @@ The Wildcard pulls double duty: each round it picks one claim to rebut and one (
 
 ### Data Flow
 
-1. User submits a topic, and `runDebate()` first hits `GET /api/debate-cache?topic=…&mode=…`.
-2. **Cache hit:** `replayCached()` dispatches the same UI callbacks the live path would (per-agent toasts, transcript appends, TTS playback through the legacy `/api/tts` endpoint). LLM calls are skipped entirely.
+1. User submits a topic. On MSE-capable clients, `runDebate()` fires round-1-advocate's `/api/debate-stream` call *speculatively, in parallel* with `GET /api/debate-cache?topic=…&mode=…`. The speculative stream uses a child `AbortController` so a cache hit (or a user abort) cancels it cleanly.
+2. **Cache hit:** the speculative stream is aborted, and `replayCached()` dispatches the same UI callbacks the live path would (per-agent toasts, transcript appends, TTS playback through the legacy `/api/tts` endpoint). LLM calls on the live path are skipped entirely. The trade-off is roughly 50 to 200ms of wasted upstream LLM tokens on a hit, in exchange for hiding the cache-check window on every miss (the dominant case for fresh topics).
 3. **Cache miss:** the orchestrator branches on `hasMSE()`.
-4. **MSE-capable clients (`liveGenStreaming`):** for each claim, open `POST /api/debate-stream` with `{ topic, history, round, agent, mode }`. The server streams LLM tokens through a `TEXT/META` state machine into a `SentenceChunker`. Each sentence is fed to ElevenLabs `streamWithTimestamps` (with `previousText` for prosody), and audio frames are forwarded to the client as NDJSON `audio` events. After the last chunk, a `claim_complete` event carries `{ fullText, rebuts, agrees_with }`. The client demuxes, feeds bytes to `MediaSource`, and applies a cumulative time offset so multi-chunk alignment data lines up into one karaoke timeline.
+4. **MSE-capable clients (`liveGenStreaming`):** the speculative round-1-advocate stream is reused; subsequent claims open their own `POST /api/debate-stream` with `{ topic, history, round, agent, mode }`. The server streams LLM tokens through a `TEXT/META` state machine into a `SentenceChunker`. Each sentence is fed to ElevenLabs `streamWithTimestamps` (with `previousText` for prosody), and audio frames are forwarded to the client as NDJSON `audio` events. After the last chunk, a `claim_complete` event carries `{ fullText, rebuts, agrees_with }`. The client demuxes, feeds bytes to `MediaSource`, and applies a cumulative time offset so multi-chunk alignment data lines up into one karaoke timeline. Mid-stream, the orchestrator emits a `partial: true` placeholder claim so the transcript can show prose as it arrives; that placeholder is replaced (same `id`) once `claim_complete` lands.
 5. **iOS Safari and other no-MSE clients (`liveGenLegacy`):** the original two-step path. `POST /api/debate` returns a structured claim, then `POST /api/tts` returns a single-shot NDJSON blob. Identical to the pre-refactor flow.
 6. Either way, claims push into `allClaims` and `buildGraphData()` regenerates D3 nodes and links.
 7. After 3 rounds, `POST /api/verdict` (pre-fetched during the last wildcard's audio) returns the Wildcard's summary. The verdict always speaks through the legacy `playAudioStream` + `/api/tts` path, so iOS and desktop share the same verdict code.
@@ -108,8 +109,8 @@ Each claim gets a deterministic ID: `{prefix}_r{round}_{index}`
 
 - Prefixes: `adv` (Advocate), `crt` (Critic), `wld` (Wildcard).
 - Example: `crt_r2_1` is the Critic's first claim in round 2.
-- The streaming parser enforces a single claim per agent per turn, so the index is always `1` on that path; the legacy path supports indices 1+.
-- Server validates claim IDs against `/^[a-z]{3}_r\d{1,2}_\d{1,2}$/` plus an expected-count check derived from `(round, agent)`.
+- Both the streaming parser and `parseAgentResponse` in `src/lib/agents.js` (legacy path) take only the first claim if a model returns several, so the index is always `1` in practice. The regex tolerates indices up to 99 for forward-compat.
+- Server validates claim IDs against `CLAIM_ID_RE = /^[a-z]{3}_r\d{1,2}_\d{1,2}$/` plus an expected-count check derived from `(round, agent)` (`validateHistory` in `api/_shared.js`).
 
 ### Agent Response Format
 
@@ -126,7 +127,7 @@ The streaming server's state machine consumes `TEXT:` prose tokens and forwards 
 
 ## ElevenLabs TTS Streaming
 
-A single endpoint produces interleaved TTS audio as the LLM is still writing the claim, so first-byte latency is bounded by *sentence one*, not *the full claim*. Two design choices make this work: prose is chunked on sentence boundaries before going to ElevenLabs, and `previousText` carries prosody across chunks so the voice doesn't reset mid-utterance.
+A single endpoint produces interleaved TTS audio while the LLM is still writing the claim, so the user waits roughly for the first sentence rather than the whole response. Two pieces hold this together: prose is chunked on sentence boundaries before going to ElevenLabs, and `previousText` carries prosody across chunks so the voice doesn't reset mid-utterance.
 
 ### Server: `api/debate-stream.js` (streaming path)
 
@@ -181,7 +182,7 @@ A single endpoint produces interleaved TTS audio as the LLM is still writing the
 
 **`previousText` for prosody continuity.** ElevenLabs accepts a `previousText` parameter so the model can match cadence and intonation across chunks. Without it, every sentence would start cold and the debate would sound spliced. With it, multi-sentence claims sound like one continuous take.
 
-**`chunk_meta` ↔ `audio` interleaving.** Each `chunk_meta` event signals "the alignment time origin has reset to zero for this chunk's audio." The client tracks `lastEndAbsolute` and shifts `timeOffset` on every `chunk_meta` so word timings stitch into one continuous karaoke timeline.
+**`chunk_meta` ↔ `audio` interleaving.** A `chunk_meta` event tells the client that the alignment time origin has reset to zero for the next chunk's audio. The client tracks `lastEndAbsolute` and shifts `timeOffset` on every `chunk_meta`, so word timings stitch into one continuous karaoke timeline.
 
 **`claim_complete` is never cached.** The cacheable NDJSON buffer holds only `chunk_meta` and `audio` events. `claim_complete` is appended fresh on every response (live or replay) so the cached blob can be reused verbatim.
 
@@ -193,7 +194,7 @@ iOS Safari has no `MediaSource` API and can't play streamed MP3 chunks. The orig
 
 **Per-agent `voiceSettings`** are baked into a `VOICE_MAP` (in `api/_tts.js`) so Advocate, Critic, and Wildcard get distinct deliveries. The Critic is more stable and less expressive, the Wildcard is the most "stylized." Voice IDs come from your ElevenLabs library via `VOICE_ID_*` env vars.
 
-**Model choice** is wired via the **required** `ELEVENLABS_TTS_MODEL` env var — there is no in-code fallback (intentional: model choice is a deliberate cost/quality trade-off and should never silently default). In production this is set to `eleven_multilingual_v2`, picked over the faster `eleven_flash_v2_5` because it captures emotion and tone better. The debate sounds like three people arguing rather than three TTS voices reading. The trade-off is slightly higher TTFB, which the sentence chunker and warmup priming hide most of.
+**Model choice** is wired via the **required** `ELEVENLABS_TTS_MODEL` env var. There is no in-code fallback; the model is a deliberate cost-and-quality trade-off and should never silently default. Production runs `eleven_multilingual_v2`, picked over the faster `eleven_flash_v2_5` because it captures emotion and tone better. The debate sounds like three people arguing rather than three TTS voices reading. TTFB is slightly higher in exchange, and the sentence chunker plus warmup priming hide most of that.
 
 **Output format: `mp3_44100_128`.** Podcast-grade quality vs the older default `mp3_22050_32`, which sounded thin on desktop speakers. **Heads up:** 128 kbps requires ElevenLabs Creator tier or above. On Free/Starter the request 4xx's and the client's `audioDisabled` kill switch falls back to silent debate.
 
@@ -244,21 +245,27 @@ startClaimStream(fetchPromise, { agent, signal, getMuted, gateBeforePlay,
 ### Orchestration & Lifecycle (`src/lib/debate.js`, `src/App.jsx`)
 
 - **Three-path orchestrator.** `runDebate()` always checks the debate-text cache first. Hits trigger `replayCached()`. Misses route through `hasMSE()`: MSE-capable browsers run `liveGenStreaming()`, others run `liveGenLegacy()`. The verdict TTS always uses the legacy path so it works identically on iOS and desktop.
+- **Speculative round-1 stream.** On MSE-capable clients, `runDebate()` opens round-1-advocate's `/api/debate-stream` call in parallel with the debate-cache GET. A cache hit aborts the speculative stream; a cache miss reuses it as the first claim of the live loop. Hides the cache-check latency on misses, which dominate fresh topics.
 - **Streaming pipeline.** For each claim, `startClaim()` opens `/api/debate-stream` immediately, passing the *previous* claim's `playback` promise as `gateBeforePlay`. Claim N+1's network call, LLM streaming, TTS chunking, and byte buffering all happen while claim N's audio is still playing. Only the final `audio.play()` waits on the gate.
+- **Mid-stream placeholder claims.** While a streaming claim is still arriving, the orchestrator forwards `chunkText` callbacks to the UI as a placeholder claim with `partial: true` and the same `id` the final claim will have. The transcript shows prose as it streams; the placeholder is overwritten when `claim_complete` arrives. On Resume, any leftover `partial` claim is dropped so the slot regenerates cleanly.
 - **Legacy pipeline.** For each claim, `callAgent` (LLM) runs in parallel with the previous claim's TTS via `pendingLlm` / `pendingTts`. Same idea as streaming, but pipelined at the LLM-call level instead of the network-stream level.
 - **Serialization.** `audio.js` uses module-level singletons (`currentAudio`, `currentResolve`). Both paths await each playback before starting the next visible play call; concurrent callers would orphan the previous promise. Pipelining doesn't violate this: LLM or network setup overlaps with audio, but only one audio element plays at a time.
 - **Verdict karaoke.** The verdict TTS uses a synthetic `__verdict__` claim ID so per-word alignment data flows through the same `onSpeakingWords` → `claimWords` → `KaraokeText` pipeline as regular claims. The transcript shows a "is reading debate verdict" indicator plus the full verdict text karaoke-highlighted as the wildcard speaks.
 - **Priming.** On topic submit, `TopicInput` fires two warmups:
   - `primeAudio()` plays a silent MP3 inside the click handler so the browser's autoplay policy is unlocked for the rest of the session.
   - `primeTTS()` sends a fire-and-forget **HEAD** request to `/api/tts` (the handler short-circuits with a 204). This pre-warms DNS/TCP/TLS and the cold-start function instance **without** triggering an ElevenLabs generation. (An earlier version POSTed a `.` and billed an EL call per debate start; HEAD removed that cost.)
-- **Mute and abort.** The header mute button flips `mutedRef`, and `audio.js` checks `getMuted()` between chunks and pauses immediately. "Stop" and "New Debate" call the orchestrator's cancel function, which `AbortController.abort()`s every in-flight `fetch` and pauses any live `<audio>` element.
+- **Mute.** The header mute button calls `setAudioMuted()`, which flips `audio.muted` on the live `<audio>` element. The stream loop keeps running: bytes still fill the MSE buffer, alignment data still drives the karaoke, `claim_complete` still arrives. Unmuting later in the same claim resumes audible playback without re-fetching anything.
+- **Abort and resume.** "New Debate" calls the orchestrator's cancel function, which `AbortController.abort()`s every in-flight `fetch` and tears down the audio element. "Stop" does the same but freezes the captured claims on screen and surfaces a **Resume** button. Resume seeds `runDebate()` with `resumeFrom: { claims }`, computes the next slot from `claims.length`, drops any trailing `partial` claim, and continues from there. Layer 2 (LLM) and Layer 3b (streaming TTS) cache hits make most of the resumed slots feel instant.
 - **Per-turn timeout.** `TURN_TIMEOUT_MS = 60_000` is a safety net. If `onended`, `onerror`, or abort never fire, the orchestrator unblocks anyway after 60s.
-- **Soft-fail.** On fetch, play, or appendBuffer failure, `audioDisabled` is set for the rest of the session and the debate continues silently. If the streaming endpoint fails partway, the orchestrator skips that agent's contribution and continues pipelining so a single blip doesn't kill the whole debate.
+- **Typed HTTP errors.** Endpoints return `{ error, code, retryAfter }` JSON on 4xx/5xx (rate-limit cooldown, daily caps, etc.). The client wraps these via `parseTypedHttpError` in `src/lib/agents.js` and surfaces `code` / `retryAfter` to the App layer so the rate-limit banner can render the typed wait text. HTTP errors from `/api/debate-stream` never set `audioDisabled` (they're upstream failures, not client-side audio failures).
+- **Soft-fail.** On fetch, play, or appendBuffer failure that *isn't* an abort artifact, `audioDisabled` is set for the rest of the session and the debate continues silently. Abort-triggered teardown errors are filtered out so the next debate's stream doesn't inherit a poisoned flag.
 - **`?fresh=1`** on the page URL bypasses the debate-text cache (`/api/debate-cache`) and the legacy TTS cache (`/api/tts`). The streaming endpoint (`/api/debate-stream`) does not currently honor `?fresh=1`, so refreshing per-claim LLM or streaming-TTS entries requires deleting them in Redis directly.
 
 ## Caching
 
-Four content-addressed namespaces, all Upstash Redis, all built on the shared `makeCacheStore` factory in `api/_shared.js`, all with `?fresh=1` bypass on the read path. **Keys do the invalidation work; TTL is just a storage backstop.** Any input change produces a new key, so the 30-day defaults can stay long without serving stale content.
+Four content-addressed namespaces, all Upstash Redis, all built on the shared `makeCacheStore` factory in `api/_shared.js`. **Keys do the invalidation work; TTL is just a storage backstop.** Any input change produces a new key, so the 30-day defaults can stay long without serving stale content.
+
+**Both upstream APIs are SSE streams on the new path**: provider LLM tokens, and ElevenLabs `streamWithTimestamps` audio plus alignment frames. The caches don't store the raw SSE events. The server consumes each stream end-to-end, accumulates its output into a buffer, and writes that buffer once the stream finishes cleanly. On replay, the buffer is written back as one continuous NDJSON response, so the browser sees the same envelope whether the data came from a live LLM and ElevenLabs run or from Redis.
 
 ### Layer 1: Debate text (`/api/debate-cache`)
 
@@ -276,26 +283,27 @@ POST /api/debate-cache  { topic, mode, claims, verdict }   → { stored: true }
 
 ### Layer 2: LLM responses (`llmCacheKey` in `api/_shared.js`)
 
-- **Key**: `sha256(JSON.stringify({ behavior, provider, model, maxTokens, systemPrompt, userMessage }))`. Identical inputs produce a cache hit and skip the LLM call entirely. Shared across the streaming path (`/api/debate-stream`) and the legacy path (`/api/debate`) so the same prompt cached on one path is reused by the other.
-- **Value**: the raw response text the provider returned (prose-first `TEXT/META` envelope on current entries, JSON on legacy).
+- **Key**: `sha256(JSON.stringify({ behavior, provider, model, maxTokens, systemPrompt, userMessage }))`. Identical inputs produce a cache hit and skip the upstream LLM call entirely. Shared across the streaming path (`/api/debate-stream`) and the legacy path (`/api/debate`) so the same prompt cached on one path is reused by the other.
+- **Value**: the full assembled provider response text. On the streaming path, `_streaming.createStateMachine()` consumes the LLM's SSE token stream and accumulates each token into `rawText`; that buffer (a `TEXT:\n…\n---META---\n{...}` envelope) is what's written to Redis once the stream finishes. On the legacy path, it's the JSON body returned by the non-streaming provider call. On replay, the cached buffer is fed straight back into the chunker so MSE-capable clients still get the same per-sentence TTS pacing without any LLM tokens crossing the wire.
 - **TTL**: `CACHE_TTL_SECONDS` (default 30d).
-- **Why this matters**: aborted debates retain their per-claim text, so partial work isn't wasted. The Layer 1 (full-debate) cache only writes on clean completion; Layer 2 catches every individual successful LLM call.
+- **Partial-work recovery**: aborted debates keep their per-claim text. Layer 1 only writes on clean completion, but Layer 2 catches every individual successful LLM call, including streaming ones whose downstream TTS or `claim_complete` write failed after the LLM had already finished.
 
 ### Layer 3a: Legacy TTS audio (`ttsCacheKey`, used by `/api/tts`)
 
 - **Key**: `sha256(model | voice | format | voice_settings_json | text)`. Voice settings (stability, style, speed) are in the key so tweaks to `VOICE_MAP` auto-invalidate without manual cache wipes.
-- **Value**: the full single-shot NDJSON body, so the karaoke pipeline replays identically from cache as from a live EL stream.
+- **Value**: the full single-shot NDJSON body for one ElevenLabs call. The server `tee`s every `streamWithTimestamps` SSE frame into both the live response and a `chunks[]` array; on clean completion the joined string is written to cache. Replays write that string back byte-for-byte, so the karaoke pipeline can't tell live from cached.
 - **TTL**: `TTS_CACHE_TTL_SECONDS` (default 2,592,000 = 30d).
+- **`?fresh=1`** on `/api/tts` proactively deletes the entry.
 - Powers verdict audio and iOS Safari debate audio.
 
 ### Layer 3b: Streaming TTS (`ttsStreamCacheKey`, used by `/api/debate-stream`)
 
-- **Key**: same shape as Layer 3a but namespaced separately. The cached value is the *multi-chunk* NDJSON blob (`chunk_meta` + `audio` events), so cumulative alignment offsets stay correct on replay.
-- **Value**: the assembled NDJSON stream, sans the final `claim_complete` event (that's appended fresh on every replay).
+- **Key**: same shape as Layer 3a, but the hash input is salted with `stream|` and the Redis key uses the `ttsstream:` prefix so the two namespaces can't collide.
+- **Value**: the assembled *multi-chunk* NDJSON blob (`chunk_meta` + `audio` events, one chunk per sentence) for the whole claim. Each sentence's ElevenLabs `streamWithTimestamps` SSE output is fed into the live response *and* appended to `ndjsonBuffer`; once the dispatcher has drained every sentence, `ndjsonBuffer.join('')` is written to cache. The final `claim_complete` event is intentionally *not* cached: it's appended fresh on every response so the cached blob can be reused verbatim.
 - **TTL**: `TTS_CACHE_TTL_SECONDS` (default 30d).
-- **Replay shape**: on cache hit, the server writes the cached blob byte-for-byte then appends a fresh `claim_complete` event built from the cached LLM response's parsed meta trailer.
-- **Cache hits skip the char budget.** Replays cost the user nothing and don't consume EL quota.
-- **`?fresh=1`** on the request URL proactively deletes the entry (mirrors Layer 1) so an aborted regen doesn't leave the stale one behind.
+- **Replay shape**: on cache hit, the server writes the cached blob byte-for-byte then appends a fresh `claim_complete` event built from the cached LLM response's parsed meta trailer. The client's cumulative-offset bookkeeping still works because the cached blob preserves the original `chunk_meta` boundaries.
+- **No `?fresh=1` handling.** `/api/debate-stream` does not parse the param. To refresh, delete the `ttsstream:cache:*` key (and matching `llm:cache:*` key) directly.
+- **No TTS char budget on this path.** Live regens here bypass `TTS_CHARS_*` limits; the legacy `/api/tts` path is where those budgets are enforced.
 
 ### Maintenance scripts
 
@@ -342,6 +350,9 @@ The cache factory's `wrap` and `unwrap` indirection exists because Upstash's RES
 | `scripts/_redis.js` | Shared Upstash client + `scanAll` + `CACHE_PATTERNS` for maintenance scripts |
 | `scripts/cache-status.js` | Read-only inspection of the four cache layers |
 | `scripts/wipe-cache.js` | Delete all entries in the four cache namespaces (preserves rate-limit counters) |
+| `scripts/pull-env-from-vercel.sh` | Pull env vars from a Vercel environment into `.env.local` (with backup + `VERCEL_*` strip) |
+| `scripts/sync-env-to-vercel.sh` | Push every `.env.local` entry to one or both Vercel environments (idempotent; chmod-600 tempfile for values) |
+| `scripts/flush-redis-db.sh` | `FLUSHDB`-equivalent over the Upstash REST API; refuses to run without `--dry-run` or `--yes` |
 | `scripts/generate-contours.ts` | Pre-build art generator: FBM-noise topographic contour SVG (run via `npm run contours`) |
 
 ## Getting Started
@@ -352,6 +363,7 @@ The cache factory's `wrap` and `unwrap` indirection exists because Upstash's RES
 - Vercel CLI (`npm i -g vercel`), needed for local dev so `/api/*` and the Vite frontend share an origin.
 - API keys: Anthropic, OpenAI, Google, ElevenLabs.
 - An Upstash Redis instance (provisioned via the Vercel Marketplace, or any Upstash account). Optional but recommended. Without it, rate limits, TTS budgets, and all four cache layers all fail open and provider spend caps become your only backstop.
+- `gitleaks` (`brew install gitleaks`) for the pre-commit secret scan. See [Governance](#governance) below.
 
 ### Installation
 
@@ -385,7 +397,7 @@ ELEVENLABS_API_KEY=...
 VOICE_ID_ADVOCATE=...    # pick a voice ID from your EL library
 VOICE_ID_CRITIC=...
 VOICE_ID_WILDCARD=...
-ELEVENLABS_TTS_MODEL=eleven_multilingual_v2  # required — no in-code fallback
+ELEVENLABS_TTS_MODEL=eleven_multilingual_v2  # required, no in-code fallback
 ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128       # requires EL Creator tier; code fallback matches
 
 # ── Upstash Redis (optional; powers rate limits + cache) ──
@@ -429,12 +441,55 @@ npm run contours    # regenerate the topographic contour background art
 
 ### Deploy to Vercel
 
-The repo is configured for Vercel out of the box:
+The repo deploys to Vercel without extra configuration:
 
 - `api/` is auto-detected as serverless functions.
 - Set all of the above env vars in your Vercel project settings (different values per environment if you like).
 - If you provisioned Upstash via the Vercel Marketplace, `KV_REST_API_*` are wired automatically.
 - Deployments happen on push.
+
+## Vercel Env Sync
+
+Three shell scripts in `scripts/` move env vars between `.env.local` and the Vercel project's `development` / `preview` / `production` environments, plus a fourth that wipes the Upstash database for a clean slate. All four require `vercel link` to have run once (so `.vercel/project.json` exists) and the Vercel CLI on `PATH`. Values flow through `chmod 600` tempfiles, so secrets never land in shell history or stdout.
+
+```bash
+npm run env:pull                  # pull development env from Vercel → .env.local
+./scripts/pull-env-from-vercel.sh production    # or pull a different environment
+
+npm run env:push                  # push every key in .env.local to BOTH development + production
+./scripts/sync-env-to-vercel.sh development     # push to one environment only
+
+npm run cache:status              # read-only inspection of the four cache layers
+npm run cache:wipe                # delete cache entries (preserves rate-limit counters)
+
+npm run redis:flush -- --dry-run  # report Upstash dbsize, no delete
+npm run redis:flush -- --yes      # FLUSHDB the whole project DB (also wipes counters)
+```
+
+### `scripts/pull-env-from-vercel.sh`
+
+Pulls env vars from a Vercel environment into `.env.local`. Backs up any existing `.env.local` to `.env.local.bak.<timestamp>` (the `.env*.bak*` rule in `.gitignore` keeps those out of the repo). Strips `VERCEL_*` system-reserved vars on the way in, because Vercel injects them automatically at runtime and rejects manual sets. Prints the variable names (not values) at the end so you can confirm the pull worked.
+
+Default target is `development`; pass `preview` or `production` to pull a different environment.
+
+### `scripts/sync-env-to-vercel.sh`
+
+Reverse direction. Reads `.env.local` line-by-line, strips comments, handles `export KEY=VALUE` and quoted values, and uploads each entry to the named Vercel environments. Existing values are removed first so the new value wins (idempotent re-runs are safe). Skips `VERCEL_*` keys, matching the symmetric strip on pull.
+
+Default targets are `development production` (both). Pass a subset (e.g. `./scripts/sync-env-to-vercel.sh development`) to push to one environment only. After a push, run `vercel --prod` or `vercel` to redeploy and pick up the new values in already-deployed environments.
+
+### `scripts/flush-redis-db.sh`
+
+`FLUSHDB`-equivalent over the Upstash REST API. Reads `KV_REST_API_URL` and `KV_REST_API_TOKEN` from `.env.local` without sourcing the file (so shell metacharacters in arbitrary env values can't execute). Refuses to run without an explicit `--dry-run` or `--yes` flag, which makes accidental "blow away production state" a deliberate two-character act.
+
+Wider than `cache:wipe`: also flushes `rl:*` counters, cooldown locks, and `tts:chars:*` budgets. The first requests after a flush bypass quota protection until counters re-populate on their own.
+
+### Typical workflows
+
+- **First-time setup.** `vercel link`, then `npm run env:pull` to seed `.env.local` from Vercel's development env. The pull script writes `chmod 600` and the gitleaks hook is the backstop if anything ever escapes.
+- **Adding a new env var.** Edit `.env.local`, run `vercel dev` to confirm locally, then `npm run env:push` to sync to both environments. Redeploy to pick it up in already-running deployments.
+- **Rotating a key.** Edit the value in `.env.local`, `npm run env:push`, then trigger a redeploy. The cache key cares about `BEHAVIOR_HASH` and prompt content, not env-var values, so rotating a model env var (e.g. `GOOGLE_MODEL`) is the cheap path: cache keys regenerate naturally on the next visitor.
+- **Post-incident clean slate.** `npm run cache:wipe` clears cache entries but preserves rate-limit state. Use `redis:flush -- --yes` only when you also want counters reset (e.g., a load-test reset, dev environment cleanup).
 
 ## Rate Limiting & Budgets
 
@@ -451,7 +506,7 @@ All limits live in Upstash Redis so they're shared across serverless invocations
 | Debate text + LLM cache TTL | 30d | `CACHE_TTL_SECONDS` |
 | TTS audio cache TTL | 30d | `TTS_CACHE_TTL_SECONDS` |
 
-The cooldown is implemented as `SET NX EX` on `rl:cd:<ip>`. Only the *first* call of a new debate (round 1, advocate) acquires it; subsequent agent calls within the same debate skip the lock. Daily counters auto-expire 25h after creation so a slow day rolls over.
+The cooldown runs in two phases on `rl:cd:<ip>`. `checkRateLimit()` is read-only and rejects the request if the key already has a positive TTL. After the first LLM call succeeds (first SSE token on the streaming path, or 200 response on the legacy path), `markDebateStart()` writes the cooldown key with `EX`. This split means a failed admission (404 model, 502 upstream, auth fail) won't lock the user out of retrying. Only the *first* call of a new debate (round 1, advocate) triggers the check; subsequent agent calls within the same debate skip it. Daily counters auto-expire 25h after creation so a slow day rolls over.
 
 **Cache hits sidestep most limits.** A replayed debate makes zero LLM calls (no `/api/debate-stream` or `/api/debate` invocations, so no daily-debate counter bump), and cached legacy TTS audio skips the per-IP char budget. The cooldown still applies on the entry call if a live regen happens, but the GET on `/api/debate-cache` is unrestricted.
 
@@ -463,7 +518,7 @@ The frontend also prevents parallel debates structurally: while `status !== 'idl
 
 ## Security
 
-The API includes several hardening measures:
+A few hardening measures live in the API layer:
 
 - **Origin check.** Rejects requests from anything not in the `ALLOWED_ORIGINS` list (prod URL plus localhost dev ports).
 - **Input size caps.** Topic ≤ 500 chars, claim text ≤ 2,000 chars, TTS text ≤ 1,000 chars per request.
@@ -471,6 +526,46 @@ The API includes several hardening measures:
 - **Cache POST validation.** `/api/debate-cache` POST revalidates topic plus every claim's shape plus verdict shape before writing. Origin headers are forgeable from non-browser clients; without this, an attacker could poison the cache with fabricated content keyed to a popular topic for the full 30-day TTL.
 - **Prompt armoring.** System prompts instruct each model to treat the topic as a subject to debate, not an instruction to follow.
 - **Generic error messages.** Provider details are logged server-side only; clients always get `"Service temporarily unavailable"`.
+
+## Governance
+
+A fresh clone is safe to commit to within minutes of cloning. Three pieces handle the work between them: `CLAUDE.md` for context, a gitleaks pre-commit hook for mechanical secret blocking, and Claude Code review skills for PR sign-off.
+
+### `CLAUDE.md`
+
+Top-level `CLAUDE.md` is the canonical reference Claude Code (and any other AI assistant pointed at this repo) reads on every session. It covers:
+
+- **First-time setup** (`brew install gitleaks vercel`, `npm install`, `vercel link`, `vercel dev`).
+- **Architecture overview** of the streaming and legacy paths, the wire protocol for `/api/debate-stream`, and the data flow through `runDebate()`.
+- **Secrets discipline.** Never reproduce live values from `.env.local` in any generated file (planning docs, READMEs, code comments, error messages, AI-generated artifacts). Always use placeholders like `<your-key>`. Plan and spec artifacts get deleted once consumed, and `docs/` is gitignored so stray copy-pasted secrets can't reach the index.
+- **Gotchas** for known footguns: use `vercel dev` not `npm run dev`, don't bypass `gateBeforePlay`, `BEHAVIOR_HASH` invalidates all caches, and so on.
+- **Time-to-first-audio benchmarks** so regressions in cold-start latency are visible against a baseline.
+
+`CLAUDE.md` is part of the project's public interface. Architecture or workflow changes should land alongside an edit there, so the next session starts from current state instead of stale assumptions.
+
+### Pre-commit hook (gitleaks)
+
+`.githooks/pre-commit` runs [gitleaks](https://github.com/gitleaks/gitleaks) against the staged diff on every commit and blocks the commit if it finds a secret pattern. `npm install` activates the hook via the `prepare` script (`git config core.hooksPath .githooks`). Setup on a fresh clone is one line:
+
+```bash
+brew install gitleaks && npm install
+```
+
+`.gitleaks.toml` extends the gitleaks default ruleset with a custom rule for ElevenLabs API keys (`sk_[a-f0-9]{40,64}`), which the built-in defaults don't cover. New project-specific patterns go in the same file.
+
+If the hook isn't installed, its error message tells you how to install it. Bypass (`git commit --no-verify`) is reserved for emergencies and should include a written reason in the commit message. The `Secrets discipline` rule in `CLAUDE.md` is the upstream layer that should keep a bypass from ever being needed.
+
+The hook exists because a real ElevenLabs key was once committed via a planning document that copy-pasted `.env.local` content verbatim. The mechanical backstop catches what discipline misses.
+
+### Claude review agents
+
+PR review runs through Claude Code's built-in review skills rather than a hosted bot. The skills are invoked from the user side, not via a `.github/workflows/` file:
+
+- **`/review`** runs a focused PR review against the current branch or a specific PR.
+- **`/security-review`** runs a security-flavored review of pending changes, covering OWASP-style issues, input validation, and secret handling.
+- **`/ultrareview`** kicks off a multi-agent cloud review of the current branch, or `/ultrareview <PR#>` for a GitHub PR. It bundles the local branch and runs without needing a GitHub remote.
+
+There is no test suite in the repo, so these reviews are how regressions get caught before merge. The architecture and gotcha sections in `CLAUDE.md` give the reviewer agents enough context to flag changes that violate the streaming and legacy split, bypass the gate, or touch a cache namespace without updating `BEHAVIOR_HASH`.
 
 ## Tech Stack
 

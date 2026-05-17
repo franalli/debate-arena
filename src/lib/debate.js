@@ -39,15 +39,16 @@ function persistDebateCache(topic, mode, claims, verdict) {
   }).catch(() => {})
 }
 
-export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
+export function runDebate(topic, maxRounds, callbacks, mode = 'fast', options = {}) {
   const {
     onAgentStart, onAgentComplete, onRoundComplete, onError, onComplete,
     onVerdictStart, onVerdict, onSpeakingStart, onSpeakingEnd, onSpeakingWords,
     getMuted = () => false,
     fresh = false
   } = callbacks
+  const { resumeFrom = null } = options
   const abortController = new AbortController()
-  const allClaims = []
+  const allClaims = resumeFrom?.claims ? [...resumeFrom.claims] : []
 
   resetAudio()
 
@@ -102,7 +103,7 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
         }
       }
     }
-    onComplete?.()
+    if (!abortController.signal.aborted) onComplete?.()
   }
 
   // Kick off an LLM call for (agentId, round) and return a tagged-result
@@ -176,28 +177,33 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
       // the audio has been playing for several seconds for the first
       // claim — the un-pipelined one).
       onChunkText: (text) => {
+        // partial: true is dropped on resume so the slot regenerates.
         onAgentComplete?.(agentId, round, [{
           id: speakingId,
           agentId, round,
           text,
           rebuts: null,
-          agrees_with: null
+          agrees_with: null,
+          partial: true
         }])
       }
     })
   }
 
-  const liveGenStreaming = async (firstStream = null) => {
+  const liveGenStreaming = async (firstStream = null, startRound = 1, startAgentIdx = 0) => {
     // firstStream is the speculative round-1-advocate stream started in
     // parallel with the debate-cache check (see run()). If absent (e.g.,
-    // !hasMSE() fallthrough, or future callers), start it here.
-    let stream = firstStream || startClaim(AGENT_ORDER[0], 1, null)
+    // !hasMSE() fallthrough, or future callers), start it here. On resume,
+    // (startRound, startAgentIdx) point at the next unfilled slot and
+    // firstStream is null so we start fresh from that slot.
+    let stream = firstStream || startClaim(AGENT_ORDER[startAgentIdx], startRound, null)
     let prevPlayback = null
     let pendingVerdict = null
 
     outer:
-    for (let round = 1; round <= maxRounds; round++) {
-      for (let i = 0; i < AGENT_ORDER.length; i++) {
+    for (let round = startRound; round <= maxRounds; round++) {
+      const innerStart = round === startRound ? startAgentIdx : 0
+      for (let i = innerStart; i < AGENT_ORDER.length; i++) {
         // Wait for the previous claim's audio to finish before
         // yielding the floor. prevPlayback always resolves (the
         // audio module force-resolves on abort / error).
@@ -223,6 +229,14 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
         // playback (the next claim's instead of this one's).
         const currentPlayback = stream.playback
         const claim = await stream.claim
+
+        if (claim?.error) {
+          // Pipelined next claims would hit the same gate — abort to free them.
+          if (abortController.signal.aborted) return null
+          onError?.(claim.error, agentId, round)
+          abortController.abort()
+          return null
+        }
 
         if (!claim) {
           // Stream failed before claim_complete. Skip this agent's
@@ -291,8 +305,8 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
   // Two-step per claim: callAgent (/api/debate, JSON) then speakClaim
   // (/api/tts, single-shot NDJSON). Pipelining at the LLM level —
   // next agent's LLM call runs in parallel with current agent's TTS.
-  const liveGenLegacy = async () => {
-    let pendingLlm = startLlm(AGENT_ORDER[0], 1)
+  const liveGenLegacy = async (startRound = 1, startAgentIdx = 0) => {
+    let pendingLlm = startLlm(AGENT_ORDER[startAgentIdx], startRound)
     let pendingVerdict = null
     let pendingTts = null
 
@@ -307,8 +321,9 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
     }
 
     outer:
-    for (let round = 1; round <= maxRounds; round++) {
-      for (let i = 0; i < AGENT_ORDER.length; i++) {
+    for (let round = startRound; round <= maxRounds; round++) {
+      const innerStart = round === startRound ? startAgentIdx : 0
+      for (let i = innerStart; i < AGENT_ORDER.length; i++) {
         const agentId = AGENT_ORDER[i]
 
         if (pendingTts) {
@@ -361,30 +376,44 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
 
   const run = async () => {
     try {
-      // Speculatively fire round-1-advocate's stream in parallel with
-      // the debate-cache check. On cache hit, we abort the speculative
-      // call (wastes ~50-200ms of upstream LLM work — the cache check
-      // window — but saves the same on every cache miss, which is the
-      // dominant case for fresh topics). The child AbortController
-      // inherits from the main signal so user-driven aborts still kill
-      // the speculative call.
+      // Resume picks up at the next unfilled slot; fresh starts at (1, 0).
+      const startCount = resumeFrom ? allClaims.length : 0
+      const startRound = Math.floor(startCount / AGENT_ORDER.length) + 1
+      const startAgentIdx = startCount % AGENT_ORDER.length
+
+      // Speculatively fire round-1-advocate's stream in parallel with the
+      // debate-cache check. On cache hit, we abort the speculative call
+      // (wastes ~50-200ms of upstream LLM work — the cache check window —
+      // but saves the same on every cache miss, the dominant case). The
+      // child AbortController inherits from the main signal so user-driven
+      // aborts still kill the speculative call. Resume skips both
+      // speculative and cache — the prior partial run already exhausted them.
       let speculativeStream = null
       let speculativeAbort = null
-      if (hasMSE()) {
-        speculativeAbort = new AbortController()
-        const onParentAbort = () => speculativeAbort.abort()
-        abortController.signal.addEventListener('abort', onParentAbort, { once: true })
-        speculativeStream = startClaim(AGENT_ORDER[0], 1, null, speculativeAbort.signal)
+      if (!resumeFrom) {
+        if (hasMSE()) {
+          speculativeAbort = new AbortController()
+          const onParentAbort = () => speculativeAbort.abort()
+          abortController.signal.addEventListener('abort', onParentAbort, { once: true })
+          speculativeStream = startClaim(AGENT_ORDER[0], 1, null, speculativeAbort.signal)
+        }
+
+        const cached = await fetchCachedDebate(topic, mode, abortController.signal, fresh)
+        if (cached?.claims?.length) {
+          if (speculativeAbort) speculativeAbort.abort()
+          await replayCached(cached)
+          return
+        }
       }
 
-      const cached = await fetchCachedDebate(topic, mode, abortController.signal, fresh)
-      if (cached?.claims?.length) {
-        if (speculativeAbort) speculativeAbort.abort()
-        await replayCached(cached)
-        return
+      let pendingVerdict
+      if (startRound > maxRounds) {
+        pendingVerdict = startVerdict()
+      } else if (hasMSE()) {
+        pendingVerdict = await liveGenStreaming(speculativeStream, startRound, startAgentIdx)
+      } else {
+        pendingVerdict = await liveGenLegacy(startRound, startAgentIdx)
       }
-
-      const pendingVerdict = hasMSE() ? await liveGenStreaming(speculativeStream) : await liveGenLegacy()
 
       // Verdict: pendingVerdict was started during the last wildcard's TTS
       // (set by launchNext / streaming equivalent on every path that
@@ -426,7 +455,9 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
         persistDebateCache(topic, mode, allClaims, finalVerdict)
       }
 
-      onComplete?.()
+      // Caller-initiated abort is not "complete" — firing onComplete here
+      // would clobber the caller's intended post-abort state transition.
+      if (!abortController.signal.aborted) onComplete?.()
     } catch (err) {
       if (err.name !== 'AbortError') {
         onError?.(err, null, null)

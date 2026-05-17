@@ -65,11 +65,11 @@ function extractJsonSlice(raw) {
 // can't share code (Vite bundle can't import from api/), so any change to
 // the format must be applied to BOTH files.
 function tryProseFormat(cleaned) {
-  const textStart = cleaned.match(/^\s*TEXT:\s*\n?/i)
+  const textStart = cleaned.match(/^\s*TEXT[\s:]+/i)
   if (!textStart) return null
 
   const afterText = cleaned.slice(textStart[0].length)
-  const metaSep = afterText.match(/\n---\s*META\s*---\s*\n?/i)
+  const metaSep = afterText.match(/\s*---\s*META\s*---\s*/i)
 
   let text, metaRaw
   if (metaSep) {
@@ -142,6 +142,17 @@ function parseAgentResponse(raw) {
 
 // ── Public API ──
 
+// Wrap a non-2xx Response in an Error carrying the server's typed
+// envelope: { error, code, retryAfter } → .message / .code / .retryAfter (+ .status).
+export async function parseTypedHttpError(res) {
+  const body = await res.json().catch(() => ({}))
+  const e = new Error(body.error || `Server error (${res.status})`)
+  e.status = res.status
+  if (body.code) e.code = body.code
+  if (body.retryAfter) e.retryAfter = body.retryAfter
+  return e
+}
+
 export async function callAgent(agentId, topic, allClaims, round, signal, mode) {
   const res = await fetch('/api/debate', {
     method: 'POST',
@@ -149,15 +160,7 @@ export async function callAgent(agentId, topic, allClaims, round, signal, mode) 
     signal,
     body: JSON.stringify({ agent: agentId, topic, history: allClaims, round, mode })
   })
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    const e = new Error(err.error || `Server error (${res.status})`)
-    e.status = res.status
-    if (err.code) e.code = err.code
-    if (err.retryAfter) e.retryAfter = err.retryAfter
-    throw e
-  }
+  if (!res.ok) throw await parseTypedHttpError(res)
 
   const { raw } = await res.json()
   return parseAgentResponse(raw)
@@ -170,15 +173,7 @@ export async function callVerdictAgent(topic, allClaims, signal) {
     signal,
     body: JSON.stringify({ topic, history: allClaims })
   })
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    const e = new Error(err.error || `Server error (${res.status})`)
-    e.status = res.status
-    if (err.code) e.code = err.code
-    if (err.retryAfter) e.retryAfter = err.retryAfter
-    throw e
-  }
+  if (!res.ok) throw await parseTypedHttpError(res)
 
   const { raw } = await res.json()
   return parseVerdictResponse(raw.trim())

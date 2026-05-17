@@ -139,16 +139,16 @@ export async function checkRateLimit(ip, isNewDebate) {
 
   try {
     if (isNewDebate) {
+      // Read-only check — the cooldown key is set by markDebateStart()
+      // AFTER the LLM call succeeds. A failed admission (404 model, 502,
+      // etc.) shouldn't lock the user out of retrying.
       const cdKey = `rl:cd:${ip}`
-      const cooldownSeconds = Math.ceil(DEBATE_COOLDOWN_MS / 1000)
-      const acquired = await redis.set(cdKey, '1', { nx: true, ex: cooldownSeconds })
-      if (acquired === null) {
-        const ttl = await redis.ttl(cdKey)
-        const wait = ttl > 0 ? ttl : cooldownSeconds
+      const ttl = await redis.ttl(cdKey)
+      if (ttl > 0) {
         return {
           code: 'cooldown',
-          message: `Wait ${wait}s before starting a new debate (one debate per minute).`,
-          retryAfter: wait
+          message: `Wait ${ttl}s before starting a new debate.`,
+          retryAfter: ttl
         }
       }
     }
@@ -180,6 +180,20 @@ export async function checkRateLimit(ip, isNewDebate) {
   } catch (err) {
     console.error('[ratelimit] KV error:', err.message)
     return null
+  }
+}
+
+// Mark a successful debate start — call this AFTER the first LLM call
+// has returned 200 (or a cache hit has been served). Failures before
+// this point won't lock the user out via cooldown.
+export async function markDebateStart(ip) {
+  const redis = getRedis()
+  if (!redis) return
+  try {
+    const cooldownSeconds = Math.ceil(DEBATE_COOLDOWN_MS / 1000)
+    await redis.set(`rl:cd:${ip}`, '1', { ex: cooldownSeconds })
+  } catch (err) {
+    console.warn('[ratelimit] cooldown set failed:', err.message)
   }
 }
 
@@ -434,7 +448,6 @@ export async function callOpenAI(systemPrompt, userMessage, maxTokens) {
       body: JSON.stringify({
         model,
         max_completion_tokens: tokens,
-        // 'low' for compute parity with Gemini's thinkingLevel — same "fair fight."
         reasoning_effort: LLM_SETTINGS.openai.reasoning_effort,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -464,8 +477,7 @@ export async function callGoogle(systemPrompt, userMessage, maxTokens) {
         contents: [{ parts: [{ text: userMessage }] }],
         generationConfig: {
           maxOutputTokens: tokens,
-          // 'low' for compute parity with OpenAI's reasoning_effort.
-          thinkingConfig: { thinkingLevel: LLM_SETTINGS.google.thinkingLevel }
+          thinkingConfig: LLM_SETTINGS.google
         }
       })
     })
@@ -606,7 +618,7 @@ export async function* streamGoogle(systemPrompt, userMessage, maxTokens, opts =
       contents: [{ parts: [{ text: userMessage }] }],
       generationConfig: {
         maxOutputTokens: tokens,
-        thinkingConfig: { thinkingLevel: LLM_SETTINGS.google.thinkingLevel }
+        thinkingConfig: LLM_SETTINGS.google
       }
     })
   })

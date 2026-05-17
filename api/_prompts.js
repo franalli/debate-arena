@@ -124,7 +124,7 @@ Respond with your claim in the required TEXT/META format. Claim IDs (like "${pre
 // propagates to both the LLM call AND the cache key.
 export const LLM_SETTINGS = {
   openai: { reasoning_effort: 'low' },
-  google: { thinkingLevel: 'low' }
+  google: { thinkingBudget: 0 }
 }
 
 // ── Content-addressed fingerprint ──────────────────────────
