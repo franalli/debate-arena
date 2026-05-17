@@ -107,5 +107,5 @@ Set in `.env.local`: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`. Op
   - Deep cold (cache miss): ~9s. Dominated by Gemini 3.1 Pro reasoning TTFT (~3-5s); not addressable in app code without switching models.
   - Deep cache HIT (full-debate replay): ~2.4s.
   - Fast cold: ~5-7s.
-- **Browser support**: MSE-capable clients (desktop Chrome/Firefox/Safari, Android) use `/api/debate-stream`. iOS Safari has no MediaSource, falls back to legacy `/api/debate` + `/api/tts` two-step. Capability check is `hasMSE()` in `src/lib/audio.js`.
+- **Browser support**: MSE-capable clients (desktop Chrome/Firefox/Safari, Android) use `/api/debate-stream`. iOS (Safari, Brave, and any other iOS browser — Apple forces WKWebView) is routed to legacy `/api/debate` + `/api/tts`. iOS 17.1+ does expose `MediaSource`, but its sourceBuffer quota is small enough that long debates trip `QuotaExceededError` mid-stream and brick playback; `hasMSE()` in `src/lib/audio.js` excludes iOS UAs unconditionally.
 - **Code conventions**: no TypeScript, JSX functional components with hooks, `.js` extension explicit in imports, single quotes, 2-space indent, no semicolons.

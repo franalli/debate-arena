@@ -52,7 +52,7 @@ The Wildcard pulls double duty: each round it picks one claim to rebut and one (
 │                            │     startClaimStream → /api/debate-stream│
 │                            │     parses chunk_meta/audio/claim_complete│
 │                            │                                         │
-│                            └─► liveGenLegacy()  (iOS Safari)         │
+│                            └─► liveGenLegacy()  (iOS, no-MSE)        │
 │                                  callAgent → /api/debate (JSON)      │
 │                                  speakClaim → /api/tts  (NDJSON)     │
 │                                                                      │
@@ -98,7 +98,7 @@ The Wildcard pulls double duty: each round it picks one claim to rebut and one (
 2. **Cache hit:** the speculative stream is aborted, and `replayCached()` dispatches the same UI callbacks the live path would (per-agent toasts, transcript appends, TTS playback through the legacy `/api/tts` endpoint). LLM calls on the live path are skipped entirely. The trade-off is roughly 50 to 200ms of wasted upstream LLM tokens on a hit, in exchange for hiding the cache-check window on every miss (the dominant case for fresh topics).
 3. **Cache miss:** the orchestrator branches on `hasMSE()`.
 4. **MSE-capable clients (`liveGenStreaming`):** the speculative round-1-advocate stream is reused; subsequent claims open their own `POST /api/debate-stream` with `{ topic, history, round, agent, mode }`. The server streams LLM tokens through a `TEXT/META` state machine into a `SentenceChunker`. Each sentence is fed to ElevenLabs `streamWithTimestamps` (with `previousText` for prosody), and audio frames are forwarded to the client as NDJSON `audio` events. After the last chunk, a `claim_complete` event carries `{ fullText, rebuts, agrees_with }`. The client demuxes, feeds bytes to `MediaSource`, and applies a cumulative time offset so multi-chunk alignment data lines up into one karaoke timeline. Mid-stream, the orchestrator emits a `partial: true` placeholder claim so the transcript can show prose as it arrives; that placeholder is replaced (same `id`) once `claim_complete` lands.
-5. **iOS Safari and other no-MSE clients (`liveGenLegacy`):** the original two-step path. `POST /api/debate` returns a structured claim, then `POST /api/tts` returns a single-shot NDJSON blob. Identical to the pre-refactor flow.
+5. **iOS clients and other no-MSE browsers (`liveGenLegacy`):** the original two-step path. `POST /api/debate` returns a structured claim, then `POST /api/tts` returns a single-shot NDJSON blob. Identical to the pre-refactor flow. iOS 17.1+ does expose `MediaSource`, but its `sourceBuffer` quota is small enough that long debates trip `QuotaExceededError` mid-stream and brick playback. `hasMSE()` in `src/lib/audio.js` therefore excludes iOS UAs (Safari, Brave, Chrome — Apple forces WKWebView on every iOS browser) regardless of feature support, with an `iPadOS-as-Mac` check via `navigator.maxTouchPoints`.
 6. Either way, claims push into `allClaims` and `buildGraphData()` regenerates D3 nodes and links.
 7. After 3 rounds, `POST /api/verdict` (pre-fetched during the last wildcard's audio) returns the Wildcard's summary. The verdict always speaks through the legacy `playAudioStream` + `/api/tts` path, so iOS and desktop share the same verdict code.
 8. On clean completion (verdict plus all 9 claims), `POST /api/debate-cache` writes the debate for the next viewer (`keepalive: true` so a same-tab nav doesn't kill it).
@@ -190,7 +190,7 @@ A single endpoint produces interleaved TTS audio while the LLM is still writing 
 
 ### Server: `api/tts.js` (legacy / verdict path)
 
-iOS Safari has no `MediaSource` API and can't play streamed MP3 chunks. The original single-shot endpoint stays in place for those clients and for the verdict (which is short enough that streaming buys nothing). It returns one big NDJSON blob: each line carries `{ audioBase64, alignment }`. Same cache shape, separate cache namespace.
+iOS browsers can't reliably play streamed MP3 chunks via MSE (iOS 17.1+ exposes `MediaSource`, but its `sourceBuffer` quota is too small for multi-minute debates and trips `QuotaExceededError` mid-stream). The original single-shot endpoint stays in place for those clients and for the verdict (which is short enough that streaming buys nothing). It returns one big NDJSON blob: each line carries `{ audioBase64, alignment }`. Same cache shape, separate cache namespace.
 
 **Per-agent `voiceSettings`** are baked into a `VOICE_MAP` (in `api/_tts.js`) so Advocate, Critic, and Wildcard get distinct deliveries. The Critic is more stable and less expressive, the Wildcard is the most "stylized." Voice IDs come from your ElevenLabs library via `VOICE_ID_*` env vars.
 
@@ -240,11 +240,13 @@ startClaimStream(fetchPromise, { agent, signal, getMuted, gateBeforePlay,
 
 **Cumulative alignment offset.** Each ElevenLabs chunk's `characterStartTimesSeconds` restart at zero. The client tracks `lastEndAbsolute` per audio frame and bumps `timeOffset` on every `chunk_meta`. Word timings are emitted in absolute seconds so the Transcript component's `requestAnimationFrame` poll against `audio.currentTime` lines up cleanly across chunks.
 
-**Legacy `playAudioStream`.** Same NDJSON shape, no `chunk_meta` events (single chunk), no gate plumbing. Used by the verdict and by iOS Safari's full debate flow.
+**Quota-aware `safeAppend`.** `appendBuffer` is wrapped with retry-on-error: transient `InvalidStateError` (an internal `remove` racing the append) retries up to three times; `QuotaExceededError` triggers an eviction pass that drops everything earlier than `audio.currentTime - 5s` (the `BUFFER_KEEP_SECONDS` constant) and retries. Without this, one quota hit on a memory-tight client would poison `audioDisabled` for the rest of the session and the orchestrator would fly through the remaining claims silently. iOS is excluded from MSE entirely by `hasMSE()` rather than relying on this fallback, since iOS's quota is small enough that eviction can't keep up.
+
+**Legacy `playAudioStream`.** Same NDJSON shape, no `chunk_meta` events (single chunk), no gate plumbing. Used by the verdict and by every iOS browser's full debate flow.
 
 ### Orchestration & Lifecycle (`src/lib/debate.js`, `src/App.jsx`)
 
-- **Three-path orchestrator.** `runDebate()` always checks the debate-text cache first. Hits trigger `replayCached()`. Misses route through `hasMSE()`: MSE-capable browsers run `liveGenStreaming()`, others run `liveGenLegacy()`. The verdict TTS always uses the legacy path so it works identically on iOS and desktop.
+- **Three-path orchestrator.** `runDebate()` always checks the debate-text cache first. Hits trigger `replayCached()`. Misses route through `hasMSE()`: MSE-capable browsers run `liveGenStreaming()`, others (including every iOS browser, by UA exclusion) run `liveGenLegacy()`. The verdict TTS always uses the legacy path so it works identically on iOS and desktop.
 - **Speculative round-1 stream.** On MSE-capable clients, `runDebate()` opens round-1-advocate's `/api/debate-stream` call in parallel with the debate-cache GET. A cache hit aborts the speculative stream; a cache miss reuses it as the first claim of the live loop. Hides the cache-check latency on misses, which dominate fresh topics.
 - **Streaming pipeline.** For each claim, `startClaim()` opens `/api/debate-stream` immediately, passing the *previous* claim's `playback` promise as `gateBeforePlay`. Claim N+1's network call, LLM streaming, TTS chunking, and byte buffering all happen while claim N's audio is still playing. Only the final `audio.play()` waits on the gate.
 - **Mid-stream placeholder claims.** While a streaming claim is still arriving, the orchestrator forwards `chunkText` callbacks to the UI as a placeholder claim with `partial: true` and the same `id` the final claim will have. The transcript shows prose as it streams; the placeholder is overwritten when `claim_complete` arrives. On Resume, any leftover `partial` claim is dropped so the slot regenerates cleanly.
@@ -294,7 +296,7 @@ POST /api/debate-cache  { topic, mode, claims, verdict }   → { stored: true }
 - **Value**: the full single-shot NDJSON body for one ElevenLabs call. The server `tee`s every `streamWithTimestamps` SSE frame into both the live response and a `chunks[]` array; on clean completion the joined string is written to cache. Replays write that string back byte-for-byte, so the karaoke pipeline can't tell live from cached.
 - **TTL**: `TTS_CACHE_TTL_SECONDS` (default 2,592,000 = 30d).
 - **`?fresh=1`** on `/api/tts` proactively deletes the entry.
-- Powers verdict audio and iOS Safari debate audio.
+- Powers verdict audio and every iOS browser's debate audio.
 
 ### Layer 3b: Streaming TTS (`ttsStreamCacheKey`, used by `/api/debate-stream`)
 
@@ -326,7 +328,7 @@ The cache factory's `wrap` and `unwrap` indirection exists because Upstash's RES
 | `src/App.jsx` | Main app: state, layout, callback wiring, `?fresh=1` plumbing |
 | `src/lib/agents.js` | Agent config (name/model/color/prefix). Parser for both `TEXT/META` prose-trailer and legacy JSON response formats |
 | `src/lib/debate.js` | Async orchestrator. `hasMSE()` capability branch + `replayCached` / `liveGenStreaming` / `liveGenLegacy` / verdict |
-| `src/lib/audio.js` | `startClaimStream` (streaming, gated playback for pipelining, cumulative alignment offset), `playAudioStream` (legacy single-shot, used by verdict + iOS), `hasMSE`, mute, timeout |
+| `src/lib/audio.js` | `startClaimStream` (streaming, gated playback for pipelining, cumulative alignment offset, quota-aware `safeAppend` eviction), `playAudioStream` (legacy single-shot, used by verdict + iOS), `hasMSE` (UA-based iOS exclusion), mute, timeout |
 | `src/lib/graphUtils.js` | Graph data builder, Wildcard-only edge filtering, scoring logic |
 | `src/lib/useMediaQuery.js` | `useMediaQuery` and `useIsMobile` (≤720px) for responsive layout |
 | `src/components/DebateGraph.jsx` | D3 force-directed SVG graph (800×700, fixed agent anchors: Advocate top-center, Critic bottom-left, Wildcard bottom-right) |
@@ -338,8 +340,8 @@ The cache factory's `wrap` and `unwrap` indirection exists because Upstash's RES
 | `src/components/RoundToasts.jsx` | Round winner notifications |
 | `src/styles/theme.css` | Dark theme CSS variables |
 | `api/debate-stream.js` | Per-claim streaming endpoint. LLM SSE → state machine → sentence chunker → serial EL `streamWithTimestamps` with `previousText` → NDJSON (`chunk_meta` / `audio` / `claim_complete` / `error`). Two cache namespaces: shared LLM + isolated TTS-stream |
-| `api/debate.js` | Legacy non-streaming claim endpoint (iOS Safari + fallback). Returns one claim's structured response |
-| `api/tts.js` | Legacy non-streaming TTS endpoint. Used by `/api/verdict` audio and iOS Safari claim audio. NDJSON stream + tee, sync cache-write |
+| `api/debate.js` | Legacy non-streaming claim endpoint (iOS browsers + fallback). Returns one claim's structured response |
+| `api/tts.js` | Legacy non-streaming TTS endpoint. Used by `/api/verdict` audio and every iOS browser's claim audio. NDJSON stream + tee, sync cache-write |
 | `api/verdict.js` | Wildcard final judgement, always non-streaming (~150 tokens) |
 | `api/debate-cache.js` | Debate text cache: GET (lookup), POST (validated write), `?fresh=1` proactive delete |
 | `api/_shared.js` | Provider LLM clients (`callX` + `streamX`), origin check, validation, KV rate-limit + TTS-budget + cache factory (LLM, legacy TTS, streaming TTS, debate text) |
