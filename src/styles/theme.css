@@ -156,10 +156,14 @@ input {
 }
 
 /* Gradient-clipped text. Use the base class plus a modifier:
-   `<span className="gradient-text gradient-text--title">`. The
-   modifier sets `background` to a LITERAL gradient (no var()) —
-   iOS WebKit's -webkit-background-clip: text silently fails to
-   repaint when `background` resolves through any CSS variable. */
+   `<span className="gradient-text gradient-text--title">`. Two iOS
+   WebKit footguns the modifier sidesteps:
+   - `background-image` (NOT `background` shorthand) — the shorthand
+     resets background-clip to border-box, so the gradient paints
+     the whole element box and the transparent text is invisible.
+   - Literal gradient (NOT var()) — -webkit-background-clip: text
+     silently fails to repaint when background resolves through any
+     CSS variable. */
 .gradient-text {
   display: inline-block;
   background-clip: text;
@@ -168,9 +172,9 @@ input {
   -webkit-text-fill-color: transparent;
 }
 .gradient-text--title {
-  background: linear-gradient(135deg, #22c55e, #a855f7, #ef4444);
+  background-image: linear-gradient(135deg, #22c55e, #a855f7, #ef4444);
 }
 .gradient-text--shimmer {
-  background: linear-gradient(90deg, #22c55e, #a855f7, #ef4444, #a855f7, #22c55e);
+  background-image: linear-gradient(90deg, #22c55e, #a855f7, #ef4444, #a855f7, #22c55e);
 }
 
