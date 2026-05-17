@@ -60,6 +60,14 @@ while IFS= read -r raw_line; do
   key="${line%%=*}"
   value="${line#*=}"
 
+  # VERCEL_* are system-reserved (auto-injected by Vercel at runtime).
+  # Vercel rejects manual sets with a 4xx, so skip them silently rather
+  # than burning two API calls per var just to log failures. The
+  # pull-env-from-vercel.sh script strips them too — symmetric pair.
+  case "$key" in
+    VERCEL_*) continue ;;
+  esac
+
   # strip surrounding single or double quotes
   case "$value" in
     \"*\") value="${value#\"}"; value="${value%\"}" ;;

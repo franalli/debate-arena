@@ -256,11 +256,19 @@ export default async function handler(req, res) {
     console.error('[debate-stream] error:', err.message)
     if (cleanupDispatcher) await cleanupDispatcher()
 
+    // Surface real error details to the client in non-production so a
+    // developer doesn't have to dig into the vercel-dev terminal to
+    // diagnose. In production, keep the generic message so internal
+    // paths / env var names / upstream provider details don't leak.
+    const wireMessage = process.env.NODE_ENV === 'production'
+      ? 'Service temporarily unavailable'
+      : (err.message || 'Service temporarily unavailable')
+
     if (!res.headersSent) {
-      res.status(502).json({ error: 'Service temporarily unavailable' })
+      res.status(502).json({ error: wireMessage })
     } else {
       try {
-        res.write(JSON.stringify({ type: 'error', recoverable: false, message: 'Service temporarily unavailable' }) + '\n')
+        res.write(JSON.stringify({ type: 'error', recoverable: false, message: wireMessage }) + '\n')
       } catch { /* connection already torn down */ }
       try { res.end() } catch { /* ignore */ }
     }

@@ -38,4 +38,6 @@ export async function scanAll(pattern) {
 
 // Single source of truth for the cache namespaces both scripts touch.
 // Rate-limit and char-budget counters (`rl:*`, `tts:chars:*`) stay out.
-export const CACHE_PATTERNS = ['debate:cache:*', 'llm:cache:*', 'tts:cache:*']
+// `ttsstream:cache:*` is the per-claim multi-chunk NDJSON cache written
+// by /api/debate-stream (see _shared.js ttsStreamCacheKey).
+export const CACHE_PATTERNS = ['debate:cache:*', 'llm:cache:*', 'tts:cache:*', 'ttsstream:cache:*']

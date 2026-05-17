@@ -6,7 +6,13 @@
 
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
 
-export const MODEL_ID = process.env.ELEVENLABS_TTS_MODEL || 'eleven_flash_v2_5'
+// ELEVENLABS_TTS_MODEL is required — no in-code fallback. The choice of
+// model is a deliberate cost/quality trade-off and should never silently
+// default; misconfiguring the env should fail loudly at function init.
+if (!process.env.ELEVENLABS_TTS_MODEL) {
+  throw new Error('ELEVENLABS_TTS_MODEL is required (set it in .env.local locally and in Vercel env for deployments)')
+}
+export const MODEL_ID = process.env.ELEVENLABS_TTS_MODEL
 export const OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128'
 
 export const VOICE_MAP = {

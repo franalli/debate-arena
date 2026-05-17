@@ -163,8 +163,8 @@ A single endpoint produces interleaved TTS audio as the LLM is still writing the
      for await (elChunk of textToSpeech.streamWithTimestamps(voiceId, {
        text: sentence,
        previousText: previousText || undefined,   // ← prosody continuity
-       modelId: eleven_multilingual_v2,
-       outputFormat: mp3_44100_128,
+       modelId: MODEL_ID,                          // from ELEVENLABS_TTS_MODEL env
+       outputFormat: OUTPUT_FORMAT,
        voiceSettings: VOICE_MAP[agent].voiceSettings
      })):
        emitCacheable({ type: 'audio', seq, audioBase64, alignment })
@@ -193,7 +193,7 @@ iOS Safari has no `MediaSource` API and can't play streamed MP3 chunks. The orig
 
 **Per-agent `voiceSettings`** are baked into a `VOICE_MAP` (in `api/_tts.js`) so Advocate, Critic, and Wildcard get distinct deliveries. The Critic is more stable and less expressive, the Wildcard is the most "stylized." Voice IDs come from your ElevenLabs library via `VOICE_ID_*` env vars.
 
-**Model choice: `eleven_multilingual_v2`.** Picked over the faster `eleven_flash_v2_5` (the code fallback) because it captures emotion and tone better. The debate sounds like three people arguing rather than three TTS voices reading. The trade-off is slightly higher TTFB, which the sentence chunker and warmup priming hide most of.
+**Model choice** is wired via the **required** `ELEVENLABS_TTS_MODEL` env var — there is no in-code fallback (intentional: model choice is a deliberate cost/quality trade-off and should never silently default). In production this is set to `eleven_multilingual_v2`, picked over the faster `eleven_flash_v2_5` because it captures emotion and tone better. The debate sounds like three people arguing rather than three TTS voices reading. The trade-off is slightly higher TTFB, which the sentence chunker and warmup priming hide most of.
 
 **Output format: `mp3_44100_128`.** Podcast-grade quality vs the older default `mp3_22050_32`, which sounded thin on desktop speakers. **Heads up:** 128 kbps requires ElevenLabs Creator tier or above. On Free/Starter the request 4xx's and the client's `audioDisabled` kill switch falls back to silent debate.
 
@@ -385,7 +385,7 @@ ELEVENLABS_API_KEY=...
 VOICE_ID_ADVOCATE=...    # pick a voice ID from your EL library
 VOICE_ID_CRITIC=...
 VOICE_ID_WILDCARD=...
-ELEVENLABS_TTS_MODEL=eleven_multilingual_v2  # better emotion; code fallback is eleven_flash_v2_5
+ELEVENLABS_TTS_MODEL=eleven_multilingual_v2  # required — no in-code fallback
 ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128       # requires EL Creator tier; code fallback matches
 
 # ── Upstash Redis (optional; powers rate limits + cache) ──

@@ -139,6 +139,11 @@ export function startClaimStream(responsePromise, opts) {
 
   ;(async () => {
     if (audioDisabled || getMuted?.() || signal?.aborted) {
+      // If signal was already aborted when fetch() ran in startClaim,
+      // the fetchPromise we received is an already-rejected promise
+      // that nobody else will await. Attach a no-op catch to keep it
+      // from surfacing as an unhandled AbortError in devtools.
+      Promise.resolve(responsePromise).catch(() => {})
       settleClaim(null); settlePlayback(); return
     }
 
@@ -475,7 +480,11 @@ async function* parseNdjson(body) {
       }
     }
   } finally {
-    try { reader.cancel() } catch { /* ignore */ }
+    // reader.cancel() returns a Promise that may reject if the
+    // underlying stream was already errored (e.g., abort fired during
+    // read). Synchronous try/catch only covers sync throws — explicit
+    // .catch() silences the async rejection.
+    try { reader.cancel().catch(() => {}) } catch { /* ignore */ }
   }
 }
 

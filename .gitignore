@@ -24,5 +24,6 @@ dist-ssr
 *.sw?
 .vercel
 .env*.local
+.env*.bak*
 .claude/
 docs/

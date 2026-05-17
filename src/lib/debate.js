@@ -230,6 +230,9 @@ export function runDebate(topic, maxRounds, callbacks, mode = 'fast') {
           // doesn't kill the whole debate.
           if (abortController.signal.aborted) return null
           onError?.(new Error('Stream incomplete'), agentId, round)
+          // Re-check — onError can synchronously trigger
+          // abortController.abort() via App.jsx's no-claims-yet branch.
+          if (abortController.signal.aborted) return null
           prevPlayback = currentPlayback
           const next = nextTarget(round, i)
           if (next.kind === 'claim') {
