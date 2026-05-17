@@ -8,7 +8,13 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "contours": "npx tsx scripts/generate-contours.ts"
+    "contours": "npx tsx scripts/generate-contours.ts",
+    "prepare": "git config core.hooksPath .githooks || true",
+    "env:pull": "./scripts/pull-env-from-vercel.sh",
+    "env:push": "./scripts/sync-env-to-vercel.sh",
+    "cache:status": "node scripts/cache-status.js",
+    "cache:wipe": "node scripts/wipe-cache.js",
+    "redis:flush": "./scripts/flush-redis-db.sh"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.47.0",

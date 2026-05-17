@@ -22,14 +22,18 @@ const WildcardVerdict = forwardRef(function WildcardVerdict({ claims, verdictTex
       ref={divRef}
       style={{
         background: 'var(--bg-secondary)',
-        borderTop: '1px solid var(--border)',
+        // Thick wildcard-colored accent + drop-shadow lifts the verdict tab
+        // off the transcript (which shares the same bg-secondary wash).
+        // 4px matches the verdict body's borderLeft thickness for consistency.
+        borderTop: `4px solid ${AGENTS.wildcard.color}`,
+        boxShadow: '0 -6px 16px -6px rgba(0, 0, 0, 0.45)',
         flexShrink: expanded ? 1 : 0,
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column'
       }}
     >
-      {/* Collapsed header bar — just show verdict toggle */}
+      {/* Collapsed header bar — wildcard-tinted so the toggle reads as a button */}
       <div
         onClick={() => setExpanded(prev => !prev)}
         style={{
@@ -37,9 +41,13 @@ const WildcardVerdict = forwardRef(function WildcardVerdict({ claims, verdictTex
           alignItems: 'center',
           justifyContent: 'center',
           padding: '0.7rem 2rem',
+          background: AGENTS.wildcard.dimColor,
           cursor: 'pointer',
-          userSelect: 'none'
+          userSelect: 'none',
+          transition: 'background var(--transition)'
         }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(168, 85, 247, 0.22)' }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = AGENTS.wildcard.dimColor }}
       >
         <span style={{
           fontSize: '0.9rem',

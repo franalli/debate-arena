@@ -31,6 +31,15 @@ export const PREFIX_TO_AGENT = Object.fromEntries(
   Object.entries(AGENTS).map(([id, a]) => [a.prefix, id])
 )
 
+// Slice the outermost {...} span from a string, or null if no braces present.
+// Used to recover a parseable JSON object from text that may have trailing
+// commentary or stray content around it.
+function extractJsonObjectSpan(text) {
+  const first = text.indexOf('{')
+  const last = text.lastIndexOf('}')
+  return (first !== -1 && last > first) ? text.slice(first, last + 1) : null
+}
+
 // Strip markdown fences and extract the inner-most JSON object span.
 // Returns { cleaned, jsonSlice } — both available so callers can fall back
 // to plain text (cleaned) when JSON.parse fails on the slice.
@@ -38,14 +47,65 @@ function extractJsonSlice(raw) {
   const cleaned = raw.trim()
     .replace(/^```(?:json)?\s*\n?/i, '')
     .replace(/\n?```\s*$/i, '')
-  const first = cleaned.indexOf('{')
-  const last = cleaned.lastIndexOf('}')
-  const jsonSlice = (first !== -1 && last > first) ? cleaned.slice(first, last + 1) : cleaned
+  const jsonSlice = extractJsonObjectSpan(cleaned) ?? cleaned
   return { cleaned, jsonSlice }
+}
+
+// Tolerant parser for the upcoming prose-first format:
+//   TEXT:
+//   <one paragraph>
+//   ---META---
+//   {"rebuts": "...", "agrees_with": "..."}
+// Returns the same shape parseAgentResponse returns, or null if not this format.
+// Lenient about whitespace, missing trailer (uses everything as text), and
+// trailing junk after the META JSON object.
+//
+// CROSS-BOUNDARY MIRROR: api/_streaming.js has its own server-side parser
+// (extractFromRawLlm + parseMetaTrailer) for the same wire format. They
+// can't share code (Vite bundle can't import from api/), so any change to
+// the format must be applied to BOTH files.
+function tryProseFormat(cleaned) {
+  const textStart = cleaned.match(/^\s*TEXT:\s*\n?/i)
+  if (!textStart) return null
+
+  const afterText = cleaned.slice(textStart[0].length)
+  const metaSep = afterText.match(/\n---\s*META\s*---\s*\n?/i)
+
+  let text, metaRaw
+  if (metaSep) {
+    text = afterText.slice(0, metaSep.index).trim()
+    metaRaw = afterText.slice(metaSep.index + metaSep[0].length).trim()
+  } else {
+    text = afterText.trim()
+    metaRaw = ''
+  }
+
+  if (!text) return null
+
+  let meta = {}
+  if (metaRaw) {
+    try {
+      meta = JSON.parse(metaRaw)
+    } catch {
+      const span = extractJsonObjectSpan(metaRaw)
+      if (span) {
+        try { meta = JSON.parse(span) } catch { /* keep empty */ }
+      }
+    }
+  }
+
+  return [{
+    text,
+    rebuts: meta.rebuts || null,
+    agrees_with: meta.agrees_with || null
+  }]
 }
 
 function parseAgentResponse(raw) {
   const { cleaned, jsonSlice } = extractJsonSlice(raw)
+
+  const prose = tryProseFormat(cleaned)
+  if (prose) return prose
 
   try {
     const parsed = JSON.parse(jsonSlice)

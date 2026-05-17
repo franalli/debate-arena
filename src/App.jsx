@@ -3,11 +3,11 @@ import { Volume2, VolumeX } from 'lucide-react'
 import { stopAudio } from './lib/audio.js'
 import TopicInput from './components/TopicInput.jsx'
 import DebateGraph from './components/DebateGraph.jsx'
-import Transcript from './components/Transcript.jsx'
+import Transcript, { KaraokeText } from './components/Transcript.jsx'
 import ThinkingIndicator from './components/ThinkingIndicator.jsx'
 import WildcardVerdict from './components/WildcardVerdict.jsx'
 import RoundToasts from './components/RoundToasts.jsx'
-import { runDebate } from './lib/debate.js'
+import { runDebate, buildVerdictTtsString, VERDICT_SPEAKING_ID } from './lib/debate.js'
 import { buildGraphData, computeWildcardScore, getWinner } from './lib/graphUtils.js'
 import { AGENTS, PREFIX_TO_AGENT } from './lib/agents.js'
 import { useIsMobile } from './lib/useMediaQuery.js'
@@ -73,7 +73,21 @@ export default function App() {
       },
       onAgentComplete: (agentId, round, newClaims) => {
         setThinkingAgent(null)
-        accumulated = [...accumulated, ...newClaims]
+        if (newClaims.length === 0) return
+        // Upsert by id. The streaming pipeline calls this multiple times
+        // per claim — once with each incremental chunk_meta arrival
+        // (partial text, null meta) and once at claim_complete with the
+        // finalized text + rebuts/agrees_with. The legacy non-streaming
+        // path calls it once per claim with the final claim; the upsert
+        // is a no-op insert in that case.
+        for (const nc of newClaims) {
+          const idx = accumulated.findIndex(c => c.id === nc.id)
+          if (idx >= 0) {
+            accumulated = accumulated.map((c, i) => i === idx ? nc : c)
+          } else {
+            accumulated = [...accumulated, nc]
+          }
+        }
         setAllClaims([...accumulated])
         setGraphData(buildGraphData(accumulated))
       },
@@ -566,9 +580,33 @@ export default function App() {
           overflow: 'hidden',
           order: isMobile ? 2 : 1
         }}>
-          {thinkingAgent && (
+          {/* During verdict TTS we show (a) the "reading verdict" indicator
+              and (b) a karaoke render of the exact TTS text so the user can
+              follow word-by-word. Reuses the same KaraokeText component the
+              transcript uses for regular claims — the synthetic
+              VERDICT_SPEAKING_ID lets per-word timings key into claimWords
+              identically to claim TTS. */}
+          {(thinkingAgent || speakingClaimId === VERDICT_SPEAKING_ID) && (
             <div style={{ padding: '0.5rem 1rem', flexShrink: 0 }}>
-              <ThinkingIndicator agentId={thinkingAgent} />
+              <ThinkingIndicator
+                agentId={thinkingAgent || 'wildcard'}
+                label={thinkingAgent ? 'is thinking' : 'is reading debate verdict'}
+              />
+              {!thinkingAgent && verdictText && (
+                <div style={{
+                  marginTop: '0.6rem',
+                  fontSize: '0.95rem',
+                  lineHeight: 1.55,
+                  color: 'var(--text-primary)',
+                  borderLeft: `3px solid ${AGENTS.wildcard.color}`,
+                  paddingLeft: '0.75rem'
+                }}>
+                  <KaraokeText
+                    text={buildVerdictTtsString(verdictText)}
+                    words={claimWords[VERDICT_SPEAKING_ID] || []}
+                  />
+                </div>
+              )}
             </div>
           )}
           <Transcript

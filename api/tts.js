@@ -1,34 +1,15 @@
-import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
-import { checkOrigin, getIp, checkCharBudget, VALID_AGENT_IDS, ttsCacheKey, getCachedTts, setCachedTts } from './_shared.js'
-
-const MODEL_ID = process.env.ELEVENLABS_TTS_MODEL || 'eleven_flash_v2_5'
-const OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128'
-
-const VOICE_MAP = {
-  advocate: {
-    voiceSettings: { stability: 0.4, similarityBoost: 0.75, style: 0.3, useSpeakerBoost: true, speed: 1.0 }
-  },
-  critic: {
-    voiceSettings: { stability: 0.6, similarityBoost: 0.75, style: 0.2, useSpeakerBoost: true, speed: 1.0 }
-  },
-  wildcard: {
-    voiceSettings: { stability: 0.5, similarityBoost: 0.75, style: 0.4, useSpeakerBoost: true, speed: 1.0 }
-  }
-}
-
-let _client = null
-function getClient() {
-  if (_client) return _client
-  const apiKey = process.env.ELEVENLABS_API_KEY
-  if (!apiKey) throw new Error('ELEVENLABS_API_KEY not configured')
-  _client = new ElevenLabsClient({ apiKey })
-  return _client
-}
-
-function getVoiceId(agent) {
-  const envKey = `VOICE_ID_${agent.toUpperCase()}`
-  return process.env[envKey]
-}
+// Single-shot ElevenLabs TTS for a full claim or verdict string. Returns
+// NDJSON: { audioBase64, alignment } per EL frame.
+//
+// PERMANENT — do not delete in any future cleanup. /api/debate-stream
+// supersedes this for per-claim audio on MSE-capable clients, but two
+// callers still depend on it: (1) the verdict path (legacy /api/verdict
+// + this endpoint, no chunking), and (2) the iOS Safari fallback path
+// in src/lib/debate.js when hasMSE() returns false. The streaming
+// endpoint maintains a SEPARATE cache namespace (ttsStreamCacheKey) so
+// the two endpoints' cached blobs never collide.
+import { checkOrigin, getIp, checkCharBudget, VALID_AGENT_IDS, ttsCacheKey, getCachedTts, setCachedTts, deleteCachedTts } from './_shared.js'
+import { MODEL_ID, OUTPUT_FORMAT, VOICE_MAP, getElClient, getVoiceId } from './_tts.js'
 
 export default async function handler(req, res) {
   // HEAD: cheap connection warmup (primeTTS on Start click). 204 = no body.
@@ -53,10 +34,14 @@ export default async function handler(req, res) {
   }
 
   // Cache check BEFORE billing char budget — cached hits cost the user
-  // nothing and don't consume EL quota. ?fresh=1 skips the read but
-  // still writes, refreshing the cache entry for subsequent normals.
-  const cacheKey = ttsCacheKey(text, MODEL_ID, voiceId, OUTPUT_FORMAT)
+  // nothing and don't consume EL quota. ?fresh=1 → admin bypass.
+  // Eagerly DELETE the stored entry so even if the live regen
+  // aborts mid-stream (the write below is gated on !clientGone),
+  // the next normal visitor MISSes and tries again instead of
+  // being served the stale entry the user was trying to overwrite.
+  const cacheKey = ttsCacheKey(text, MODEL_ID, voiceId, OUTPUT_FORMAT, VOICE_MAP[agent].voiceSettings)
   const fresh = req.query?.fresh === '1'
+  if (fresh) await deleteCachedTts(cacheKey)
   const cached = fresh ? null : await getCachedTts(cacheKey)
   if (cached) {
     res.setHeader('Content-Type', 'application/x-ndjson')
@@ -76,7 +61,7 @@ export default async function handler(req, res) {
     let clientGone = false
     req.on('close', () => { clientGone = true })
 
-    const audioStream = await getClient().textToSpeech.streamWithTimestamps(voiceId, {
+    const audioStream = await getElClient().textToSpeech.streamWithTimestamps(voiceId, {
       text,
       modelId: MODEL_ID,
       outputFormat: OUTPUT_FORMAT,
