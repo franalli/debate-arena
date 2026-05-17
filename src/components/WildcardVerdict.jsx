@@ -49,15 +49,16 @@ const WildcardVerdict = forwardRef(function WildcardVerdict({ claims, verdictTex
         onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(168, 85, 247, 0.22)' }}
         onMouseLeave={(e) => { e.currentTarget.style.background = AGENTS.wildcard.dimColor }}
       >
-        <span style={{
-          fontSize: '0.9rem',
-          fontWeight: 600,
-          background: 'var(--shimmer-gradient)',
-          backgroundSize: '200% 100%',
-          animation: 'border-shimmer 4s linear infinite',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent'
-        }}>
+        <span
+          className="gradient-text"
+          style={{
+            fontSize: '0.9rem',
+            fontWeight: 600,
+            '--gradient': 'var(--shimmer-gradient)',
+            backgroundSize: '200% 100%',
+            animation: 'border-shimmer 4s linear infinite'
+          }}
+        >
           {expanded ? '▲ Hide verdict' : '▼ Show verdict'}
         </span>
       </div>

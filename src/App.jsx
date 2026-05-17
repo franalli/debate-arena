@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
-import { Volume2, VolumeX, Swords } from 'lucide-react'
+import { Volume2, VolumeX } from 'lucide-react'
 import { setAudioMuted } from './lib/audio.js'
 import TopicInput from './components/TopicInput.jsx'
 import DebateGraph from './components/DebateGraph.jsx'
@@ -7,6 +7,7 @@ import Transcript, { KaraokeText } from './components/Transcript.jsx'
 import ThinkingIndicator from './components/ThinkingIndicator.jsx'
 import WildcardVerdict from './components/WildcardVerdict.jsx'
 import RoundToasts from './components/RoundToasts.jsx'
+import BrandTitle from './components/BrandTitle.jsx'
 import { runDebate, buildVerdictTtsString, VERDICT_SPEAKING_ID } from './lib/debate.js'
 import { buildGraphData, computeWildcardScore, getWinner } from './lib/graphUtils.js'
 import { AGENTS, AGENT_ORDER, PREFIX_TO_AGENT } from './lib/agents.js'
@@ -282,26 +283,7 @@ export default function App() {
           minWidth: 0,
           justifySelf: 'start'
         }}>
-          <h1 style={{
-            fontSize: isMobile ? '13px' : '16px',
-            fontWeight: 700,
-            margin: 0,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '6px',
-            whiteSpace: 'nowrap'
-          }}>
-            <Swords
-              size={isMobile ? 14 : 18}
-              color="var(--advocate)"
-              style={{ flexShrink: 0 }}
-            />
-            <span style={{
-              background: 'var(--title-gradient)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent'
-            }}>Debate Arena</span>
-          </h1>
+          <BrandTitle variant="header" />
 
           {/* Round dots + label — drop dots on mobile, keep "1/3" */}
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>

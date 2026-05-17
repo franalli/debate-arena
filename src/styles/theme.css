@@ -146,10 +146,26 @@ input {
   color: var(--text-primary);
 }
 
-/* Brand gradients used in multiple buttons / titles. Promoted to
-   variables so the color order is defined once. */
+/* Brand gradients used in multiple buttons / titles. Hex literals
+   (not var() refs) because iOS WebKit's -webkit-background-clip: text
+   fails to repaint after a refresh when the gradient resolves through
+   nested CSS variables. Keep in sync with --advocate / --wildcard /
+   --critic above if those ever change. */
 :root {
-  --shimmer-gradient: linear-gradient(90deg, var(--advocate), var(--wildcard), var(--critic), var(--wildcard), var(--advocate));
-  --title-gradient: linear-gradient(135deg, var(--advocate), var(--wildcard), var(--critic));
+  --shimmer-gradient: linear-gradient(90deg, #22c55e, #a855f7, #ef4444, #a855f7, #22c55e);
+  --title-gradient: linear-gradient(135deg, #22c55e, #a855f7, #ef4444);
+}
+
+/* Gradient-clipped text. Use via `<span className="gradient-text">`;
+   override the gradient by setting style={{ '--gradient': '...' }}.
+   All five properties are load-bearing on iOS WebKit — see the gradient
+   comment above. inline-block guarantees a painted area. */
+.gradient-text {
+  display: inline-block;
+  background: var(--gradient, var(--title-gradient));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 

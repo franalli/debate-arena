@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Swords } from 'lucide-react'
 import { primeAudio, primeTTS, primeStream } from '../lib/audio.js'
 import { GoogleLogo, OpenAILogo, AnthropicLogo, ElevenLabsLogo } from './ProviderLogos.jsx'
+import BrandTitle from './BrandTitle.jsx'
 import { useIsMobile } from '../lib/useMediaQuery.js'
 
 const POWERED_BY = [
@@ -106,7 +106,7 @@ export default function TopicInput({ onStart }) {
           backgroundImage: 'url(/assets/contours.svg)',
           backgroundSize: '900px 900px',
           backgroundRepeat: 'repeat',
-          opacity: 0.07,
+          opacity: 0.09,
           WebkitMaskImage: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.35) 35%, #000 75%)',
           maskImage: 'radial-gradient(ellipse at center, transparent 0%, rgba(0,0,0,0.35) 35%, #000 75%)',
           pointerEvents: 'none',
@@ -126,25 +126,7 @@ export default function TopicInput({ onStart }) {
         width: '100%'
       }}>
       <div style={{ textAlign: 'center' }}>
-        <h1 style={{
-          fontSize: isMobile ? '1.9rem' : '2.5rem',
-          fontWeight: 700,
-          marginBottom: '0.5rem',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '0.5rem'
-        }}>
-          <Swords
-            size={isMobile ? 26 : 34}
-            color="var(--advocate)"
-            style={{ flexShrink: 0 }}
-          />
-          <span style={{
-            background: 'var(--title-gradient)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent'
-          }}>Debate Arena</span>
-        </h1>
+        <BrandTitle />
         <p style={{ color: 'var(--text-secondary)', fontSize: isMobile ? '0.95rem' : '1.1rem' }}>
           3 AI agents. {rounds} rounds. One topic.
         </p>
