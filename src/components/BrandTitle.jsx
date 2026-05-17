@@ -32,7 +32,7 @@ function BrandTitle({ variant = 'hero' }) {
         color="var(--advocate)"
         style={{ verticalAlign: '-0.17em', marginRight: '0.4em' }}
       />
-      <span className="gradient-text">Debate Arena</span>
+      <span className="gradient-text gradient-text--title">Debate Arena</span>
     </h1>
   )
 }

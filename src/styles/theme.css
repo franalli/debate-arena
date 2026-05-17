@@ -146,26 +146,31 @@ input {
   color: var(--text-primary);
 }
 
-/* Brand gradients used in multiple buttons / titles. Hex literals
-   (not var() refs) because iOS WebKit's -webkit-background-clip: text
-   fails to repaint after a refresh when the gradient resolves through
-   nested CSS variables. Keep in sync with --advocate / --wildcard /
-   --critic above if those ever change. */
+/* Shimmer gradient for animated pill borders (App.jsx "New Debate"
+   button, TopicInput.jsx topic-input border). Hex literals duplicate
+   --advocate / --wildcard / --critic above; keep in sync if those
+   change. Text-clipped uses must NOT consume this via var() — see
+   .gradient-text--* below for why. */
 :root {
   --shimmer-gradient: linear-gradient(90deg, #22c55e, #a855f7, #ef4444, #a855f7, #22c55e);
-  --title-gradient: linear-gradient(135deg, #22c55e, #a855f7, #ef4444);
 }
 
-/* Gradient-clipped text. Use via `<span className="gradient-text">`;
-   override the gradient by setting style={{ '--gradient': '...' }}.
-   All five properties are load-bearing on iOS WebKit — see the gradient
-   comment above. inline-block guarantees a painted area. */
+/* Gradient-clipped text. Use the base class plus a modifier:
+   `<span className="gradient-text gradient-text--title">`. The
+   modifier sets `background` to a LITERAL gradient (no var()) —
+   iOS WebKit's -webkit-background-clip: text silently fails to
+   repaint when `background` resolves through any CSS variable. */
 .gradient-text {
   display: inline-block;
-  background: var(--gradient, var(--title-gradient));
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
+}
+.gradient-text--title {
+  background: linear-gradient(135deg, #22c55e, #a855f7, #ef4444);
+}
+.gradient-text--shimmer {
+  background: linear-gradient(90deg, #22c55e, #a855f7, #ef4444, #a855f7, #22c55e);
 }
 

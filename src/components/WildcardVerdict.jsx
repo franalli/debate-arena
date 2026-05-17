@@ -50,11 +50,10 @@ const WildcardVerdict = forwardRef(function WildcardVerdict({ claims, verdictTex
         onMouseLeave={(e) => { e.currentTarget.style.background = AGENTS.wildcard.dimColor }}
       >
         <span
-          className="gradient-text"
+          className="gradient-text gradient-text--shimmer"
           style={{
             fontSize: '0.9rem',
             fontWeight: 600,
-            '--gradient': 'var(--shimmer-gradient)',
             backgroundSize: '200% 100%',
             animation: 'border-shimmer 4s linear infinite'
           }}
