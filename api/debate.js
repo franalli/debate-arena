@@ -5,7 +5,7 @@
 // this endpoint is the iOS Safari path (no MediaSource support) and is
 // also the cache write source for entries shared with the streaming
 // endpoint via getCachedLlm. Removing it would break iOS playback.
-import { formatHistory, AGENT_CONFIG, checkOrigin, validateTopic, validateHistory, checkRateLimit, getIp, VALID_AGENT_IDS, normalizeMode } from './_shared.js'
+import { formatHistory, AGENT_CONFIG, checkOrigin, validateTopic, validateHistory, checkRateLimit, markDebateStart, getIp, VALID_AGENT_IDS, normalizeMode } from './_shared.js'
 import { MODES, buildSystemPrompt, buildUserMessage } from './_prompts.js'
 
 export default async function handler(req, res) {
@@ -38,6 +38,9 @@ export default async function handler(req, res) {
     const systemPrompt = buildSystemPrompt(agent, mode)
     const userMessage  = buildUserMessage(topic, round, agent, formatHistory(history))
     const raw = await AGENT_CONFIG[agent].caller(systemPrompt, userMessage, cfg.maxTokens)
+    // Upstream returned 200 — only now lock in the per-IP cooldown so
+    // a failed admission (404/auth-fail) doesn't lock the user out.
+    if (isNewDebate) markDebateStart(ip).catch(() => {})
     res.status(200).json({ raw })
   } catch (err) {
     console.error(`[debate] ${agent} error:`, err.message)

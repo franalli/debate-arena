@@ -20,7 +20,7 @@
 // clients and for the verdict path. Do not delete.
 
 import {
-  checkOrigin, validateTopic, validateHistory, checkRateLimit,
+  checkOrigin, validateTopic, validateHistory, checkRateLimit, markDebateStart,
   getIp, VALID_AGENT_IDS, normalizeMode, formatHistory,
   llmCacheKey, getCachedLlm, setCachedLlm,
   ttsStreamCacheKey, getCachedTtsStream, setCachedTtsStream,
@@ -209,9 +209,18 @@ export default async function handler(req, res) {
       })
 
       const llmStream = agentCfg.streamer(systemPrompt, userMessage, cfg.maxTokens, { signal: upstreamAbort.signal })
+      let firstToken = true
       try {
         for await (const token of llmStream) {
           if (clientGone) break
+          // First token = upstream LLM accepted the call. Lock in the
+          // per-IP cooldown only after this point so a 404/auth-fail
+          // doesn't strand the user in a 15s wait for a debate that
+          // never started.
+          if (firstToken) {
+            firstToken = false
+            if (isNewDebate) markDebateStart(ip).catch(() => {})
+          }
           sm.feed(token)
         }
       } catch (err) {

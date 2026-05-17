@@ -12,6 +12,7 @@
   --border-light: #444444;
 
   --advocate: #22c55e;
+  --advocate-dim: rgba(34, 197, 94, 0.15);
   --critic: #ef4444;
   --critic-dim: rgba(239, 68, 68, 0.15);
   --wildcard: #a855f7;

@@ -19,7 +19,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV_FILE=".env.local"
-TARGETS=("${@:-development production}")
+if [ $# -eq 0 ]; then
+  TARGETS=(development production)
+else
+  TARGETS=("$@")
+fi
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "error: $ENV_FILE not found" >&2

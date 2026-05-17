@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import { Volume2, VolumeX } from 'lucide-react'
-import { stopAudio } from './lib/audio.js'
+import { setAudioMuted } from './lib/audio.js'
 import TopicInput from './components/TopicInput.jsx'
 import DebateGraph from './components/DebateGraph.jsx'
 import Transcript, { KaraokeText } from './components/Transcript.jsx'
@@ -9,7 +9,7 @@ import WildcardVerdict from './components/WildcardVerdict.jsx'
 import RoundToasts from './components/RoundToasts.jsx'
 import { runDebate, buildVerdictTtsString, VERDICT_SPEAKING_ID } from './lib/debate.js'
 import { buildGraphData, computeWildcardScore, getWinner } from './lib/graphUtils.js'
-import { AGENTS, PREFIX_TO_AGENT } from './lib/agents.js'
+import { AGENTS, AGENT_ORDER, PREFIX_TO_AGENT } from './lib/agents.js'
 import { useIsMobile } from './lib/useMediaQuery.js'
 
 const RATE_LIMIT_LABELS = {
@@ -35,9 +35,11 @@ export default function App() {
   const cancelRef = useRef(null)
   const selectionTimerRef = useRef(null)
   const verdictRef = useRef(null)
-  const cooldownTimerRef = useRef(null)
   const [muted, setMuted] = useState(false)
   const mutedRef = useRef(false)
+  // True after the user clicks Stop on an incomplete debate; gates the
+  // Resume button. Cleared on New Debate, on Resume, or when starting fresh.
+  const [wasStopped, setWasStopped] = useState(false)
   const [speakingAgent, setSpeakingAgent] = useState(null)
   // Karaoke state: which claim is being spoken, and per-claim word
   // timings ({ [claimId]: [{ word, start, end }] }). currentTime is
@@ -48,23 +50,30 @@ export default function App() {
 
   useEffect(() => {
     mutedRef.current = muted
-    if (muted) stopAudio()
+    setAudioMuted(muted)
   }, [muted])
 
-  const startDebate = useCallback((debateTopic, selectedMode) => {
+  const startDebate = useCallback((debateTopic, selectedMode, options = {}) => {
+    const { resumeFrom = null } = options
     if (selectedMode) setMode(selectedMode)
     const activeMode = selectedMode || mode
-    setTopic(debateTopic)
     setStatus('running')
-    setCurrentRound(1)
-    setAllClaims([])
-    setGraphData({ nodes: [], links: [] })
-    setSelectedNode(null)
-    setVerdictText(null)
-    setRoundResults([])
+    setWasStopped(false)
     setError(null)
+    if (!resumeFrom) {
+      setTopic(debateTopic)
+      setCurrentRound(1)
+      setAllClaims([])
+      setGraphData({ nodes: [], links: [] })
+      setSelectedNode(null)
+      setVerdictText(null)
+      setRoundResults([])
+    }
 
-    let accumulated = []
+    // On resume, seed accumulated with the finalized claims so the upsert-by-id
+    // path in onAgentComplete continues to dedupe correctly when the next
+    // claim arrives.
+    let accumulated = resumeFrom ? [...resumeFrom.claims] : []
 
     const cancel = runDebate(debateTopic, maxRounds, {
       onAgentStart: (agentId, round) => {
@@ -110,11 +119,6 @@ export default function App() {
       onError: (err, agentId, round) => {
         setThinkingAgent(null)
         setError({ message: err.message, code: err.code, retryAfter: err.retryAfter })
-        // Auto-clear cooldown banner once the wait elapses
-        if (err.code === 'cooldown' && err.retryAfter) {
-          if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
-          cooldownTimerRef.current = setTimeout(() => setError(null), err.retryAfter * 1000)
-        }
         // Terminal errors: auth failures, or any error before debate has claims (e.g. rate limit)
         if (err.message.includes('401') || accumulated.length === 0) {
           cancelRef.current?.()
@@ -157,7 +161,7 @@ export default function App() {
       // ?fresh=1 on the URL bypasses both cache layers (debate text and
       // TTS audio). Off by default; opt-in for admin/regen flows.
       fresh: new URLSearchParams(window.location.search).get('fresh') === '1'
-    }, activeMode)
+    }, activeMode, resumeFrom ? { resumeFrom } : undefined)
 
     cancelRef.current = cancel
   }, [mode, maxRounds])
@@ -169,11 +173,21 @@ export default function App() {
     setSpeakingAgent(null)
     setSpeakingClaimId(null)
     setStatus('complete')
+    setWasStopped(true)
+  }
+
+  const handleResume = () => {
+    // Drop the partial trailing claim (mid-stream chunk_meta placeholder
+    // that never reached claim_complete). The orchestrator computes the
+    // next slot from claims.length, so the dropped slot is regenerated.
+    const finalClaims = allClaims.filter(c => !c.partial)
+    setAllClaims(finalClaims)
+    setGraphData(buildGraphData(finalClaims))
+    startDebate(topic, mode, { resumeFrom: { claims: finalClaims } })
   }
 
   const handleNewDebate = () => {
     if (cancelRef.current) cancelRef.current()
-    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current)
     setStatus('idle')
     setTopic('')
     setAllClaims([])
@@ -185,6 +199,7 @@ export default function App() {
     setVerdictText(null)
     setRoundResults([])
     setError(null)
+    setWasStopped(false)
   }
 
   const handleClaimClick = useCallback((claimId) => {
@@ -397,6 +412,33 @@ export default function App() {
               }}
             >
               Stop
+            </button>
+          )}
+          {status === 'complete' && wasStopped && allClaims.length < maxRounds * AGENT_ORDER.length && (
+            <button
+              onClick={handleResume}
+              style={{
+                padding: isMobile ? '0.3rem 0.6rem' : '0.4rem 0.8rem',
+                background: 'var(--advocate-dim)',
+                border: '1px solid var(--advocate)',
+                borderRadius: 'var(--radius)',
+                color: 'var(--advocate)',
+                fontSize: isMobile ? '12px' : '13px',
+                cursor: 'pointer',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
+                transition: 'all var(--transition)'
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.background = 'var(--advocate)'
+                e.target.style.color = '#fff'
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.background = 'var(--advocate-dim)'
+                e.target.style.color = 'var(--advocate)'
+              }}
+            >
+              Resume
             </button>
           )}
 

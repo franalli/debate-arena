@@ -9,6 +9,8 @@
 // second call would overwrite them and orphan the first call's Promise.
 // The debate orchestrator awaits each call before issuing the next.
 
+import { parseTypedHttpError } from './agents.js'
+
 const MIME = 'audio/mpeg'
 // Per-turn timeout safety net. Higher-quality TTS models have long,
 // sometimes-stalling generation; if onended/onerror/abort never fire,
@@ -64,6 +66,13 @@ export function stopAudio() {
   }
 }
 
+// Live mute toggle. Silences audio output without aborting the stream
+// loop — MSE buffer keeps filling, alignment keeps flowing, claim_complete
+// still arrives. Mute = silence the speakers, not cancel the debate.
+export function setAudioMuted(muted) {
+  if (currentAudio) currentAudio.muted = !!muted
+}
+
 // Karaoke driver: returns the current audio playback position in seconds,
 // or 0 if no audio is active. Consumers (Transcript) poll this on rAF.
 export function getCurrentPlaybackTime() {
@@ -74,7 +83,6 @@ export async function playAudioStream(text, opts) {
   const { agent, signal, getMuted, onPlaybackStart, onPlaybackEnd, onWords, fresh } = opts
 
   if (audioDisabled) return
-  if (getMuted?.()) return
   if (signal?.aborted) return
 
   let response
@@ -109,9 +117,12 @@ export async function playAudioStream(text, opts) {
 // Consume the new /api/debate-stream NDJSON envelope (chunk_meta / audio
 // / claim_complete / error). Event-type strings mirror those emitted by
 // api/debate-stream.js — keep them in sync. Returns { claim, playback }:
-//   - claim:    Promise resolving to { fullText, rebuts, agrees_with }
-//               as soon as the claim_complete event arrives. Null on
-//               truncation, abort, or pre-completion error.
+//   - claim:    Promise resolving to one of three shapes:
+//               • { fullText, rebuts, agrees_with } — on claim_complete.
+//               • { error: <Error with .status/.code/.retryAfter> }
+//                 — on HTTP error (4xx/5xx); orchestrator forwards the
+//                 Error to App.jsx so the typed banner can render.
+//               • null — on truncation, abort, or pre-completion failure.
 //   - playback: Promise resolving when audio playback ends (or aborts).
 //
 // Pipelining: pass `opts.gateBeforePlay` (a Promise) to defer audio
@@ -138,7 +149,7 @@ export function startClaimStream(responsePromise, opts) {
   const settlePlayback = () => { if (playbackResolve) { playbackResolve(); playbackResolve = null } }
 
   ;(async () => {
-    if (audioDisabled || getMuted?.() || signal?.aborted) {
+    if (audioDisabled || signal?.aborted) {
       // If signal was already aborted when fetch() ran in startClaim,
       // the fetchPromise we received is an already-rejected promise
       // that nobody else will await. Attach a no-op catch to keep it
@@ -158,9 +169,14 @@ export function startClaimStream(responsePromise, opts) {
       settleClaim(null); settlePlayback(); return
     }
     if (!response.ok) {
-      console.error('[audio] debate-stream endpoint returned', response.status)
-      audioDisabled = true
-      settleClaim(null); settlePlayback(); return
+      // Don't set audioDisabled — HTTP errors are upstream rate-limit /
+      // auth failures, not client-side audio failures. The next debate
+      // must not inherit a disabled flag.
+      const error = await parseTypedHttpError(response)
+      console.error(`[audio] debate-stream returned ${error.status}${error.code ? ` (${error.code})` : ''}`)
+      settleClaim({ error })
+      settlePlayback()
+      return
     }
 
     const fireEnd = makeEndFirer(onPlaybackEnd, agent)
@@ -199,10 +215,6 @@ export function startClaimStream(responsePromise, opts) {
 
       for await (const obj of parseNdjson(response.body)) {
         if (signal?.aborted) break
-        if (getMuted?.()) {
-          try { audio.pause() } catch { /* ignore */ }
-          break
-        }
 
         if (obj.type === 'chunk_meta') {
           // New chunk: shift the alignment time origin to the end of
@@ -231,6 +243,11 @@ export function startClaimStream(responsePromise, opts) {
             try {
               await safeAppend(sourceBuffer, bytes)
             } catch (err) {
+              // If the user aborted (New Debate / Stop), MSE teardown
+              // races our appendBuffer and throws InvalidStateError.
+              // That's expected — don't poison audioDisabled for the
+              // next debate's stream.
+              if (signal?.aborted) break
               console.error('[audio] appendBuffer failed:', err.message)
               audioDisabled = true
               break
@@ -253,7 +270,10 @@ export function startClaimStream(responsePromise, opts) {
             if (!started) {
               if (gateBeforePlay) await gateBeforePlay
               // Abort may have fired while we were waiting on the gate.
-              if (signal?.aborted || getMuted?.()) break
+              if (signal?.aborted) break
+              // Honor mute state at play time; setAudioMuted handles
+              // toggles after this point.
+              audio.muted = getMuted?.() ?? false
               currentAudio = audio
               playbackEndedPromise = setupPlaybackPromise(audio, signal)
               try {
@@ -265,6 +285,10 @@ export function startClaimStream(responsePromise, opts) {
                 // claim's text right as its own audio begins.
                 if (accumulatedChunkText) onChunkText?.(accumulatedChunkText)
               } catch (err) {
+                // Abort during play() rejects with AbortError or with a
+                // play-interrupted error — neither should poison the
+                // module-level audioDisabled flag for the next debate.
+                if (signal?.aborted) break
                 console.error('[audio] play() rejected:', err.message)
                 audioDisabled = true
                 break
@@ -317,7 +341,11 @@ export function startClaimStream(responsePromise, opts) {
         await playbackEndedPromise
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
+      // Any error thrown during the for-await / MSE teardown after the
+      // user aborted (New Debate / Stop) is an abort artifact, not a
+      // real failure. Never poison audioDisabled in that case — the
+      // next debate's stream must not inherit it.
+      if (err.name !== 'AbortError' && !signal?.aborted) {
         console.error('[audio] startClaimStream error:', err.message)
         audioDisabled = true
       }
@@ -495,6 +523,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
   const mediaSource = new MediaSource()
   const audio = new Audio()
   audio.src = URL.createObjectURL(mediaSource)
+  audio.muted = getMuted?.() ?? false
   currentAudio = audio
 
   let started = false
@@ -510,7 +539,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
 
     try {
       for await (const obj of parseNdjson(body)) {
-        if (signal?.aborted || getMuted?.()) {
+        if (signal?.aborted) {
           try { audio.pause() } catch { /* ignore */ }
           break
         }
@@ -520,6 +549,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
           try {
             await safeAppend(sourceBuffer, bytes)
           } catch (err) {
+            if (signal?.aborted) break
             console.error('[audio] appendBuffer failed:', err.message)
             audioDisabled = true
             break
@@ -530,6 +560,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
               started = true
               onPlaybackStart?.(agent)
             } catch (err) {
+              if (signal?.aborted) break
               console.error('[audio] play() rejected:', err.message)
               audioDisabled = true
               break
@@ -553,7 +584,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
         }
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
+      if (err.name !== 'AbortError' && !signal?.aborted) {
         console.error('[audio] MSE stream error:', err.message)
         audioDisabled = true
       }
@@ -578,7 +609,7 @@ async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onP
 
   try {
     for await (const obj of parseNdjson(body)) {
-      if (signal?.aborted || getMuted?.()) return
+      if (signal?.aborted) return
       if (obj.audioBase64) audioParts.push(base64ToBytes(obj.audioBase64))
       pushAlignment(obj.alignment)
     }
@@ -590,12 +621,13 @@ async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onP
     return
   }
 
-  if (signal?.aborted || getMuted?.()) return
+  if (signal?.aborted) return
   if (audioParts.length === 0) return
 
   const blob = new Blob(audioParts, { type: MIME })
   const url = URL.createObjectURL(blob)
   const audio = new Audio(url)
+  audio.muted = getMuted?.() ?? false
   currentAudio = audio
 
   try {
@@ -606,6 +638,7 @@ async function playViaBlob(body, { agent, signal, getMuted, onPlaybackStart, onP
       started = true
       onPlaybackStart?.(agent)
     } catch (err) {
+      if (signal?.aborted) return
       console.error('[audio] blob play rejected:', err.message)
       audioDisabled = true
     }
