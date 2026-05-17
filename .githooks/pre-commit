@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Pre-commit secret scan via gitleaks. Blocks commits that contain
+# API keys, tokens, or other recognized secret patterns.
+#
+# Setup once per clone:
+#   brew install gitleaks
+#   git config core.hooksPath .githooks
+#
+# Bypass in an emergency only (NOT recommended):
+#   git commit --no-verify
+
+set -eu
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "[pre-commit] gitleaks not installed. Install it once:" >&2
+  echo "             brew install gitleaks" >&2
+  echo "[pre-commit] Or bypass once with: git commit --no-verify" >&2
+  exit 1
+fi
+
+# --staged: scan only the diff being committed (fast).
+# --redact: don't print the secret value in error output.
+# --no-banner: keep the output focused on findings.
+if ! gitleaks git --staged --redact --no-banner; then
+  echo "" >&2
+  echo "[pre-commit] gitleaks blocked the commit — a secret was detected" >&2
+  echo "             in the staged changes (value redacted above)." >&2
+  echo "             Move the secret to .env.local (already gitignored)" >&2
+  echo "             and unstage. Then commit again." >&2
+  exit 1
+fi

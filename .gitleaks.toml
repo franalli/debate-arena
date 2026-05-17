@@ -1,0 +1,13 @@
+# gitleaks config — extends the built-in default ruleset with a custom
+# rule for ElevenLabs API keys, which the upstream defaults don't cover
+# as of gitleaks 8.30.x. Add new project-specific rules below.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id          = "elevenlabs-api-key"
+description = "ElevenLabs API key (sk_ + 40-64 hex)"
+regex       = '''sk_[a-f0-9]{40,64}'''
+keywords    = ["sk_"]
+tags        = ["key", "elevenlabs"]
