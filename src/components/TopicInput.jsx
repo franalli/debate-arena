@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Swords } from 'lucide-react'
 import { primeAudio, primeTTS, primeStream } from '../lib/audio.js'
 import { GoogleLogo, OpenAILogo, AnthropicLogo, ElevenLabsLogo } from './ProviderLogos.jsx'
 import { useIsMobile } from '../lib/useMediaQuery.js'
@@ -129,11 +130,20 @@ export default function TopicInput({ onStart }) {
           fontSize: isMobile ? '1.9rem' : '2.5rem',
           fontWeight: 700,
           marginBottom: '0.5rem',
-          background: 'var(--title-gradient)',
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent'
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '0.5rem'
         }}>
-          ⚔ Debate Arena
+          <Swords
+            size={isMobile ? 26 : 34}
+            color="var(--advocate)"
+            style={{ flexShrink: 0 }}
+          />
+          <span style={{
+            background: 'var(--title-gradient)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent'
+          }}>Debate Arena</span>
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: isMobile ? '0.95rem' : '1.1rem' }}>
           3 AI agents. {rounds} rounds. One topic.
@@ -202,12 +212,20 @@ export default function TopicInput({ onStart }) {
                 onClick={() => setMode(m)}
                 style={{
                   padding: '0.4rem 1.2rem',
-                  background: mode === m ? 'var(--wildcard)' : 'transparent',
+                  // backgroundColor (not the `background` shorthand) and
+                  // -webkit-appearance:none are both needed on iOS — without
+                  // them, WebKit paints a default button gradient on top of
+                  // the inactive button after a tap, so both buttons look
+                  // selected on Safari/Brave/etc.
+                  backgroundColor: mode === m ? 'var(--wildcard)' : 'transparent',
                   color: mode === m ? '#fff' : 'var(--text-secondary)',
                   border: 'none',
                   cursor: 'pointer',
-                  transition: 'all var(--transition)',
-                  textTransform: 'capitalize'
+                  transition: 'background-color var(--transition), color var(--transition)',
+                  textTransform: 'capitalize',
+                  WebkitAppearance: 'none',
+                  appearance: 'none',
+                  WebkitTapHighlightColor: 'transparent'
                 }}
               >
                 {m}
