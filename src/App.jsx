@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
-import { Volume2, VolumeX } from 'lucide-react'
+import { Volume2, VolumeX, Swords } from 'lucide-react'
 import { setAudioMuted } from './lib/audio.js'
 import TopicInput from './components/TopicInput.jsx'
 import DebateGraph from './components/DebateGraph.jsx'
@@ -285,13 +285,22 @@ export default function App() {
           <h1 style={{
             fontSize: isMobile ? '13px' : '16px',
             fontWeight: 700,
-            background: 'var(--title-gradient)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
             margin: 0,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
             whiteSpace: 'nowrap'
           }}>
-            ⚔ Debate Arena
+            <Swords
+              size={isMobile ? 14 : 18}
+              color="var(--advocate)"
+              style={{ flexShrink: 0 }}
+            />
+            <span style={{
+              background: 'var(--title-gradient)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent'
+            }}>Debate Arena</span>
           </h1>
 
           {/* Round dots + label — drop dots on mobile, keep "1/3" */}
