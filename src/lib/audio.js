@@ -16,11 +16,34 @@ const MIME = 'audio/mpeg'
 // sometimes-stalling generation; if onended/onerror/abort never fire,
 // the orchestrator would hang forever.
 const TURN_TIMEOUT_MS = 60_000
+// Keep this many seconds of already-played audio when evicting from a
+// full sourceBuffer. Small enough to free meaningful space on iOS's tight
+// MSE quota, large enough that brief seek-back / playhead jitter still
+// finds buffered data.
+const BUFFER_KEEP_SECONDS = 5
 
 let audioDisabled = false
 let currentAudio = null
 let currentResolve = null
-const useMSE = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported?.(MIME)
+
+// iOS WebKit (Safari, and any iOS browser — Apple forces WKWebView for
+// Chrome/Brave/etc.) exposes MediaSource since iOS 17.1, but its MSE
+// buffer quota is small enough that a few minutes of MP3 trip
+// QuotaExceededError mid-debate, after which startClaimStream sets
+// audioDisabled=true and the orchestrator silently flies through the
+// remaining claims. The legacy Blob path (playAudioStream) sidesteps
+// MSE entirely on these devices.
+function isIOS() {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  if (/iP(hone|od|ad)/.test(ua)) return true
+  // iPadOS 13+ reports as Mac; distinguish via touch support.
+  return /Mac/.test(ua) && navigator.maxTouchPoints > 1
+}
+
+const useMSE = !isIOS()
+  && typeof MediaSource !== 'undefined'
+  && MediaSource.isTypeSupported?.(MIME)
 
 const SILENT_MP3 = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQxAADB8AhSmxhIIEVCSiJrDCQBTcu3UrAIwUdkRgQbFAZC1CQEwTJ9mjRvBA4UOLD8nKVOWfh+UlK3z/177OXrfOdKl7pyn3Xf//FJAhcAvWLQ4VBYRBRY7DkmKxk+kpQq3w8q9z2pZX1V3K28cVgxbm0XbWUcgmt2vGN1XbWgrt7T2VYju28t7zoxNQVHO9b6vmH9oVbA3GRdz0XBdo7uKgTAGqYsAd/4WCxVjW9D6Sd45cKn1Bp1V/L/3//+x9b//6Ohn5Lo'
 
@@ -241,7 +264,7 @@ export function startClaimStream(responsePromise, opts) {
           if (obj.audioBase64) {
             const bytes = base64ToBytes(obj.audioBase64)
             try {
-              await safeAppend(sourceBuffer, bytes)
+              await safeAppend(sourceBuffer, bytes, audio)
             } catch (err) {
               // If the user aborted (New Debate / Stop), MSE teardown
               // races our appendBuffer and throws InvalidStateError.
@@ -435,18 +458,33 @@ async function waitUntilIdle(sourceBuffer) {
   }
 }
 
-// Defensive appendBuffer: drain, attempt, and retry on InvalidStateError.
-// The retry covers the case where an internal remove kicks in during the
-// micro-window between exiting waitUntilIdle and reaching appendBuffer —
-// catchable only after the fact via the synchronous throw, not preventable.
-async function safeAppend(sourceBuffer, bytes) {
+// Defensive appendBuffer: drain, attempt, retry on transient failures.
+//   InvalidStateError — internal remove ran in the micro-window between
+//     waitUntilIdle and appendBuffer; catchable only after the throw.
+//   QuotaExceededError — sourceBuffer is full. Common on long debates and
+//     on memory-tight clients. Evict everything older than 5s before
+//     currentTime, then retry. Without this, one quota hit poisons
+//     audioDisabled and the orchestrator silently skips the rest.
+async function safeAppend(sourceBuffer, bytes, audio) {
   for (let attempt = 0; attempt < 3; attempt++) {
     await waitUntilIdle(sourceBuffer)
     try {
       sourceBuffer.appendBuffer(bytes)
       return
     } catch (err) {
-      if (err.name === 'InvalidStateError' && attempt < 2) continue
+      if (attempt >= 2) throw err
+      if (err.name === 'InvalidStateError') continue
+      if (err.name === 'QuotaExceededError' && sourceBuffer.buffered.length > 0) {
+        const removeEnd = Math.max(0, audio.currentTime - BUFFER_KEEP_SECONDS)
+        const bufferedStart = sourceBuffer.buffered.start(0)
+        if (removeEnd > bufferedStart) {
+          try {
+            sourceBuffer.remove(bufferedStart, removeEnd)
+            await waitUntilIdle(sourceBuffer)
+          } catch { /* fall through to retry */ }
+        }
+        continue
+      }
       throw err
     }
   }
@@ -547,7 +585,7 @@ async function playViaMSE(body, { agent, signal, getMuted, onPlaybackStart, onPl
         if (obj.audioBase64) {
           const bytes = base64ToBytes(obj.audioBase64)
           try {
-            await safeAppend(sourceBuffer, bytes)
+            await safeAppend(sourceBuffer, bytes, audio)
           } catch (err) {
             if (signal?.aborted) break
             console.error('[audio] appendBuffer failed:', err.message)
