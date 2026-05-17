@@ -227,6 +227,19 @@ export function ttsCacheKey(text, model, voice, format, voiceSettings) {
   return `tts:cache:${hash}`
 }
 
+// Separate namespace for the streaming-endpoint TTS cache. The body is
+// per-chunk NDJSON with chunk_meta + audio events — NOT equivalent to
+// the single-shot NDJSON /api/tts produces, so collision with ttsCacheKey
+// would serve garbled bytes to the legacy client. Two layers of
+// separation: a `stream|` salt at the start of the hashed input (so the
+// hashes themselves never collide for the same text+voice combo) plus a
+// distinct `ttsstream:` key prefix in Upstash.
+export function ttsStreamCacheKey(text, model, voice, format, voiceSettings) {
+  const settings = JSON.stringify(voiceSettings || {})
+  const hash = createHash('sha256').update(`stream|${model}|${voice}|${format}|${settings}|${text}`).digest('hex')
+  return `ttsstream:cache:${hash}`
+}
+
 // Wrap/unwrap pair guards against Upstash auto-deserialization clobbering
 // single-line NDJSON bodies. A one-chunk body is itself valid JSON
 // ('{"…":"…"}\n'), which the SDK would parse on GET; res.write(obj) then
@@ -276,6 +289,15 @@ const ttsStore = makeCacheStore({
 export const getCachedTts = ttsStore.get
 export const setCachedTts = ttsStore.set
 export const deleteCachedTts = ttsStore.del
+
+const ttsStreamStore = makeCacheStore({
+  ns: 'ttsstream',
+  ttl: TTS_CACHE_TTL_SECONDS,
+  wrap: (body) => ({ body }),
+  unwrap: (v) => typeof v === 'string' ? v : (typeof v.body === 'string' ? v.body : null)
+})
+export const getCachedTtsStream = ttsStreamStore.get
+export const setCachedTtsStream = ttsStreamStore.set
 
 // LLM response cache (per-call). Key is JSON-stringified inputs hashed
 // with sha256 — BEHAVIOR_HASH covers prompts/sampling; the explicit
@@ -455,4 +477,156 @@ export async function callGoogle(systemPrompt, userMessage, maxTokens) {
     const parts = data.candidates?.[0]?.content?.parts || []
     return parts.filter(p => !p.thought).map(p => p.text).join('')
   })
+}
+
+// ── LLM streaming ────────────────────────────────────────────
+// Async iterators that yield raw text token chunks as the upstream LLM
+// emits them. Callers are responsible for accumulation, chunking, and
+// cache writes — these are bare streams. Abort honored via opts.signal.
+//
+// Not yet wired into any public endpoint; see `api/debate-stream.js`
+// once it lands. The non-streaming call* helpers above remain the
+// source of truth for the legacy /api/debate and verdict paths.
+
+// Parse one SSE event block (separated by \n\n) and route the JSON
+// payload to extractToken. Returns the extracted text or null. [DONE]
+// sentinels and lines without a `data:` prefix are dropped.
+function extractSseEvent(evt, extractToken) {
+  const dataLines = evt.split(/\r?\n/).filter(l => l.startsWith('data:'))
+  if (dataLines.length === 0) return null
+  // Per SSE spec, multi-line `data:` joins with \n. Strip the prefix
+  // (and a conventional single leading space) before parsing.
+  const payload = dataLines.map(l => l.replace(/^data:\s?/, '')).join('\n')
+  if (payload === '[DONE]') return null
+  try {
+    return extractToken(JSON.parse(payload))
+  } catch {
+    return null
+  }
+}
+
+async function* sseTokens(res, extractToken) {
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  // SSE event boundary is two consecutive line breaks; some servers use
+  // CRLF (\r\n\r\n) instead of LF (\n\n), so accept either.
+  const boundary = /\r?\n\r?\n/
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        if (buffer.trim()) {
+          const token = extractSseEvent(buffer, extractToken)
+          if (token) yield token
+        }
+        return
+      }
+      buffer += decoder.decode(value, { stream: true })
+      const events = buffer.split(boundary)
+      buffer = events.pop()  // last (possibly partial) event waits for more bytes
+      for (const evt of events) {
+        const token = extractSseEvent(evt, extractToken)
+        if (token) yield token
+      }
+    }
+  } finally {
+    try { reader.cancel() } catch (e) { console.debug('[sseTokens] reader.cancel suppressed:', e.message) }
+  }
+}
+
+export async function* streamAnthropic(systemPrompt, userMessage, maxTokens, opts = {}) {
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'
+  const tokens = maxTokens || 500
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    signal: opts.signal,
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: tokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+      stream: true
+    })
+  })
+  if (!res.ok) {
+    console.error(`[llm-stream] Anthropic error: ${res.status}`)
+    throw new Error('AI service temporarily unavailable')
+  }
+  yield* sseTokens(res, (evt) =>
+    evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta'
+      ? evt.delta.text
+      : null
+  )
+}
+
+export async function* streamOpenAI(systemPrompt, userMessage, maxTokens, opts = {}) {
+  const model = process.env.OPENAI_MODEL || 'gpt-4o'
+  const tokens = maxTokens || 500
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    signal: opts.signal,
+    headers: {
+      'content-type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model,
+      max_completion_tokens: tokens,
+      reasoning_effort: LLM_SETTINGS.openai.reasoning_effort,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage }
+      ],
+      stream: true
+    })
+  })
+  if (!res.ok) {
+    console.error(`[llm-stream] OpenAI error: ${res.status}`)
+    throw new Error('AI service temporarily unavailable')
+  }
+  yield* sseTokens(res, (evt) => evt.choices?.[0]?.delta?.content || null)
+}
+
+export async function* streamGoogle(systemPrompt, userMessage, maxTokens, opts = {}) {
+  const model = process.env.GOOGLE_MODEL || 'gemini-3.1-pro-preview'
+  const tokens = maxTokens || 500
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GOOGLE_API_KEY}`
+  const res = await fetch(url, {
+    method: 'POST',
+    signal: opts.signal,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ parts: [{ text: userMessage }] }],
+      generationConfig: {
+        maxOutputTokens: tokens,
+        thinkingConfig: { thinkingLevel: LLM_SETTINGS.google.thinkingLevel }
+      }
+    })
+  })
+  if (!res.ok) {
+    console.error(`[llm-stream] Google error: ${res.status}`)
+    throw new Error('AI service temporarily unavailable')
+  }
+  yield* sseTokens(res, (evt) => {
+    const parts = evt.candidates?.[0]?.content?.parts || []
+    return parts.filter(p => !p.thought).map(p => p.text || '').join('') || null
+  })
+}
+
+// ── Per-agent provider + model resolution ────────────────────
+// Single source of truth for agent → provider mapping. Replaces what
+// were four parallel maps in /api/debate-stream.js (streamer / provider
+// / modelEnv / modelDefault) plus AGENT_CALLER in /api/debate.js — any
+// future provider swap touches one row instead of five.
+export const AGENT_CONFIG = {
+  advocate: { caller: callGoogle,    streamer: streamGoogle,    provider: 'google',    modelEnv: 'GOOGLE_MODEL',    modelDefault: 'gemini-3.1-pro-preview' },
+  critic:   { caller: callOpenAI,    streamer: streamOpenAI,    provider: 'openai',    modelEnv: 'OPENAI_MODEL',    modelDefault: 'gpt-4o' },
+  wildcard: { caller: callAnthropic, streamer: streamAnthropic, provider: 'anthropic', modelEnv: 'ANTHROPIC_MODEL', modelDefault: 'claude-sonnet-4-6' }
 }

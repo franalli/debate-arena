@@ -1,6 +1,16 @@
 # gitleaks config — extends the built-in default ruleset with a custom
 # rule for ElevenLabs API keys, which the upstream defaults don't cover
 # as of gitleaks 8.30.x. Add new project-specific rules below.
+#
+# Runs via .githooks/pre-commit on every commit. Setup on a fresh clone:
+#   brew install gitleaks && npm install
+# (`npm install` runs the `prepare` script in package.json, which sets
+# `git config core.hooksPath .githooks` so the hook is active.)
+#
+# This hook exists because a real ElevenLabs key was once committed via
+# a planning doc that copy-pasted .env.local content verbatim. See the
+# "Secrets discipline" section in CLAUDE.md for the upstream rule that
+# prevents the leak in the first place.
 
 [extend]
 useDefault = true

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { primeAudio, primeTTS } from '../lib/audio.js'
+import { primeAudio, primeTTS, primeStream } from '../lib/audio.js'
 import { GoogleLogo, OpenAILogo, AnthropicLogo, ElevenLabsLogo } from './ProviderLogos.jsx'
 import { useIsMobile } from '../lib/useMediaQuery.js'
 
@@ -78,6 +78,7 @@ export default function TopicInput({ onStart }) {
     if (topic.trim()) {
       primeAudio()
       primeTTS()
+      primeStream()
       onStart(topic.trim(), mode)
     }
   }

@@ -73,7 +73,21 @@ export default function App() {
       },
       onAgentComplete: (agentId, round, newClaims) => {
         setThinkingAgent(null)
-        accumulated = [...accumulated, ...newClaims]
+        if (newClaims.length === 0) return
+        // Upsert by id. The streaming pipeline calls this multiple times
+        // per claim — once with each incremental chunk_meta arrival
+        // (partial text, null meta) and once at claim_complete with the
+        // finalized text + rebuts/agrees_with. The legacy non-streaming
+        // path calls it once per claim with the final claim; the upsert
+        // is a no-op insert in that case.
+        for (const nc of newClaims) {
+          const idx = accumulated.findIndex(c => c.id === nc.id)
+          if (idx >= 0) {
+            accumulated = accumulated.map((c, i) => i === idx ? nc : c)
+          } else {
+            accumulated = [...accumulated, nc]
+          }
+        }
         setAllClaims([...accumulated])
         setGraphData(buildGraphData(accumulated))
       },

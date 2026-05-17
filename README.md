@@ -12,10 +12,10 @@ Three AI models debate any topic in real time. A live D3 argument graph shows ho
    - 🔴 **Critic** (GPT-5.5) argues *against* the statement.
    - 🟣 **Wildcard** (Claude Sonnet 4.6) challenges both sides, then judges each round.
 3. **A force-directed graph builds in real time.** Nodes are claims, edges show the Wildcard's rebuttals and agreements. Advocate↔Critic attacks are omitted as predictable.
-4. **Each claim is spoken** via ElevenLabs (streamed, mute + abort, **word-level karaoke** in the transcript).
+4. **Each claim is spoken** via ElevenLabs as the LLM is still writing it: prose tokens feed a sentence chunker, each sentence streams to ElevenLabs, audio frames pipe back through one NDJSON response with **word-level karaoke** alignment for the transcript.
 5. **The Wildcard delivers a verdict** covering the strongest arguments and the loser's biggest gap, also spoken with per-word karaoke and a "is reading debate verdict" indicator.
 6. **Already-debated topics replay instantly** from cache: same audio, same graph, same karaoke, no LLM or TTS calls.
-7. **Aborted debates retain their work.** Per-call LLM responses and per-claim TTS audio are independently cached, so partial runs aren't wasted.
+7. **Aborted debates retain their work.** Per-call LLM responses and per-claim TTS streams are independently cached, so partial runs aren't wasted.
 
 Two debate modes:
 - **Fast.** 24-word headline-style claims, ~100 tokens per turn.
@@ -41,51 +41,65 @@ The Wildcard pulls double duty: each round it picks one claim to rebut and one (
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Frontend (React 19 + Vite 8, no TS, no state lib)                   │
 │                                                                      │
-│  TopicInput ──► runDebate() → cache-check → live OR replay path      │
-│       │              │                  │              │             │
-│       ▼              ▼                  ▼              ▼             │
-│   Transcript    DebateGraph (D3)    WildcardVerdict   karaoke poll   │
-│   (karaoke ◄────────────────────────────────────── getCurrentTime()) │
+│  TopicInput ──► runDebate() ──► cache-check                          │
+│                       │            │                                 │
+│                       │            ├─► replayCached()  (cache hit)   │
+│                       │            │                                 │
+│                       └─► hasMSE() branch (live path)                │
+│                            │                                         │
+│                            ├─► liveGenStreaming()  (MSE-capable)     │
+│                            │     startClaimStream → /api/debate-stream│
+│                            │     parses chunk_meta/audio/claim_complete│
+│                            │                                         │
+│                            └─► liveGenLegacy()  (iOS Safari)         │
+│                                  callAgent → /api/debate (JSON)      │
+│                                  speakClaim → /api/tts  (NDJSON)     │
 │                                                                      │
-│   audio.js: NDJSON parse, MSE-streamed MP3 + alignment → onWords     │
+│  audio.js: MSE buffering + cumulative alignment offset → onWords     │
 └──────┬───────────────────────────────────────────────────────────────┘
-       │  GET /api/debate-cache    POST /api/debate    POST /api/verdict
-       │  POST /api/debate-cache   POST /api/tts (NDJSON: audio+timing)
+       │  GET /api/debate-cache      POST /api/debate-stream  (MSE)
+       │  POST /api/debate-cache     POST /api/debate, /api/tts (iOS)
+       │                             POST /api/verdict + /api/tts
        ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Backend (Vercel Serverless Functions, Node.js)                      │
 │                                                                      │
-│  api/debate.js         ─► callGoogle (Advocate)                      │
-│                           callOpenAI (Critic, reasoning_effort=low)  │
-│                           callAnthropic (Wildcard)                   │
-│  api/verdict.js        ─► callAnthropic (Wildcard judges)            │
-│  api/tts.js            ─► cache-check → ElevenLabs                   │
-│                           textToSpeech.streamWithTimestamps()        │
-│                           ⇢ NDJSON {audioBase64, alignment} + tee    │
-│  api/debate-cache.js   ─► GET (lookup) / POST (write, validated)     │
-│  api/_shared.js        ─► LLM clients (per-call cache), validation,  │
-│                           KV rate limits, TTS budget, cache factory  │
-│  api/_prompts.js       ─► system prompts + sampling settings +       │
-│                           BEHAVIOR_HASH (content-addressed cache key)│
+│  api/debate-stream.js  ─► LLM SSE → _streaming state machine →       │
+│                           _chunker.SentenceChunker → serial EL       │
+│                           streamWithTimestamps (previousText for     │
+│                           prosody continuity). Emits NDJSON events:  │
+│                           {chunk_meta, audio, claim_complete, error} │
+│  api/debate.js         ─► non-streaming claim (legacy path, iOS)     │
+│  api/tts.js            ─► non-streaming TTS  (legacy path + verdict) │
+│  api/verdict.js        ─► wildcard final judgement (~150 tokens)     │
+│  api/debate-cache.js   ─► GET (lookup) / POST (validated write)      │
+│                                                                      │
+│  api/_shared.js        ─► provider LLM clients (callX + streamX),    │
+│                           rate limit, validation, cache helpers      │
+│  api/_prompts.js       ─► templates + BEHAVIOR_HASH (cache key)      │
+│  api/_chunker.js       ─► SentenceChunker (softMax 80, hardMax 200)  │
+│  api/_streaming.js     ─► TEXT/META state machine, parseMetaTrailer  │
+│  api/_tts.js           ─► EL client singleton, VOICE_MAP, voice IDs  │
 └──────┬───────────────────────────────────────────────────────────────┘
        │  Upstash Redis (Vercel Marketplace)
        ▼
   Daily counters: debates (per-IP, global), TTS chars (per-IP, global)
   Locks:          per-IP debate cooldown
-  Cache layer 1:  debate text   : full claims + verdict          (30d TTL)
-  Cache layer 2:  LLM responses : per-call raw text              (30d TTL)
-  Cache layer 3:  TTS audio     : NDJSON body per voice/settings (30d TTL)
+  Cache layer 1:  debate text       : full claims + verdict       (30d)
+  Cache layer 2:  LLM responses     : raw provider output         (30d)
+  Cache layer 3a: TTS audio (legacy): single-shot NDJSON blob     (30d)
+  Cache layer 3b: TTS stream        : multi-chunk NDJSON blob     (30d)
 ```
 
 ### Data Flow
 
 1. User submits a topic, and `runDebate()` first hits `GET /api/debate-cache?topic=…&mode=…`.
-2. **Cache hit:** `replayCached()` dispatches the same UI callbacks the live path would (per-agent toasts, transcript appends, TTS playback). LLM calls are skipped entirely.
-3. **Cache miss:** loop rounds × agents. `callAgent()` → `POST /api/debate` with `{ topic, history, round, agent, mode }`.
-4. Server picks the LLM provider per the routing table and returns the raw JSON string.
-5. Client parses it into a structured claim `{ id, text, rebuts, agrees_with }`, and `buildGraphData()` regenerates D3 nodes and links.
-6. `runDebate()` then starts `playAudioStream()` and **simultaneously pre-fetches the next agent's LLM call**, so the next claim is usually ready by the time the current audio finishes. Transitions stay near-instant. `POST /api/tts` returns NDJSON (each line = `{ audioBase64, alignment }`). Audio bytes feed `MediaSource`, and alignment data drives word-level highlighting in the transcript.
-7. After 3 rounds, `POST /api/verdict` (pre-fetched during the last wildcard's TTS) returns the Wildcard's summary. The verdict is spoken with per-word karaoke and a "Wildcard is reading debate verdict" indicator.
+2. **Cache hit:** `replayCached()` dispatches the same UI callbacks the live path would (per-agent toasts, transcript appends, TTS playback through the legacy `/api/tts` endpoint). LLM calls are skipped entirely.
+3. **Cache miss:** the orchestrator branches on `hasMSE()`.
+4. **MSE-capable clients (`liveGenStreaming`):** for each claim, open `POST /api/debate-stream` with `{ topic, history, round, agent, mode }`. The server streams LLM tokens through a `TEXT/META` state machine into a `SentenceChunker`. Each sentence is fed to ElevenLabs `streamWithTimestamps` (with `previousText` for prosody), and audio frames are forwarded to the client as NDJSON `audio` events. After the last chunk, a `claim_complete` event carries `{ fullText, rebuts, agrees_with }`. The client demuxes, feeds bytes to `MediaSource`, and applies a cumulative time offset so multi-chunk alignment data lines up into one karaoke timeline.
+5. **iOS Safari and other no-MSE clients (`liveGenLegacy`):** the original two-step path. `POST /api/debate` returns a structured claim, then `POST /api/tts` returns a single-shot NDJSON blob. Identical to the pre-refactor flow.
+6. Either way, claims push into `allClaims` and `buildGraphData()` regenerates D3 nodes and links.
+7. After 3 rounds, `POST /api/verdict` (pre-fetched during the last wildcard's audio) returns the Wildcard's summary. The verdict always speaks through the legacy `playAudioStream` + `/api/tts` path, so iOS and desktop share the same verdict code.
 8. On clean completion (verdict plus all 9 claims), `POST /api/debate-cache` writes the debate for the next viewer (`keepalive: true` so a same-tab nav doesn't kill it).
 
 ### Claim ID Format
@@ -94,55 +108,92 @@ Each claim gets a deterministic ID: `{prefix}_r{round}_{index}`
 
 - Prefixes: `adv` (Advocate), `crt` (Critic), `wld` (Wildcard).
 - Example: `crt_r2_1` is the Critic's first claim in round 2.
+- The streaming parser enforces a single claim per agent per turn, so the index is always `1` on that path; the legacy path supports indices 1+.
 - Server validates claim IDs against `/^[a-z]{3}_r\d{1,2}_\d{1,2}$/` plus an expected-count check derived from `(round, agent)`.
+
+### Agent Response Format
+
+Agents emit a prose-first envelope rather than raw JSON:
+
+```
+TEXT:
+<one paragraph of debate claim text>
+---META---
+{"rebuts": "adv_r1_1", "agrees_with": "crt_r1_1"}
+```
+
+The streaming server's state machine consumes `TEXT:` prose tokens and forwards them to the chunker the instant they arrive; the `---META---` trailer is parsed at the end of the stream for the `claim_complete` event. The legacy `agents.js` parser also accepts pure JSON (`{"claims":[{...}]}`) as a fallback for cached entries written pre-refactor.
 
 ## ElevenLabs TTS Streaming
 
-The voice layer is worth a closer look. Two things shape the design: the response carries **audio + word-level timing** together (so the transcript can karaoke), and **every utterance is cached** so repeat plays are zero-latency and zero-cost.
+A single endpoint produces interleaved TTS audio as the LLM is still writing the claim, so first-byte latency is bounded by *sentence one*, not *the full claim*. Two design choices make this work: prose is chunked on sentence boundaries before going to ElevenLabs, and `previousText` carries prosody across chunks so the voice doesn't reset mid-utterance.
 
-### Server: `api/tts.js`
+### Server: `api/debate-stream.js` (streaming path)
 
 ```
-   POST /api/tts  { agent, text }     HEAD /api/tts  → 204 (warmup; no EL call)
+   POST /api/debate-stream  { topic, agent, round, history, mode }
         │
-        ├─ checkOrigin / validate agent + non-empty text
+        ├─ checkOrigin / validate agent + round + history
+        ├─ rateLimit (cooldown only fires on round=1, advocate)
         ├─ resolve voiceId from VOICE_ID_<AGENT> env var
         │
-        ├─ cacheKey = sha256(model | voice | format | text)
-        ├─ if cached and not ?fresh=1 → return cached NDJSON
-        │                               (X-Cache: HIT, skips char-budget)
+        ├─ llmKey = sha256(provider, model, prompts, maxTokens)
+        ├─ if getCachedLlm(llmKey):
+        │     extract fullText + meta from cached prose
+        │     ttsKey = sha256(text, model, voice, format, voiceSettings)
+        │     if getCachedTtsStream(ttsKey):
+        │          X-Cache: HIT → write blob → claim_complete → end
+        │     else:
+        │          X-Cache: PARTIAL (LLM hit, TTS miss) → feed cached
+        │          fullText into chunker, skip the state machine
         │
-        ├─ checkCharBudget(ip, text.length)     ← only on cache MISS
-        │    └─ Redis: INCRBY tts:chars:ip:<day>:<ip> + global
-        │              (429 if cap exceeded, or text > per-req cap)
-        │
+        ▼  Live LLM stream (cache miss path)
+   for await (token of streamAnthropic/OpenAI/Google):
+     stateMachine.feed(token)
+        │   ├─ TEXT mode  → onProse(text) → chunker.add(text)
+        │   └─ META mode  → buffer for parseMetaTrailer at end
         ▼
-   ElevenLabsClient.textToSpeech.streamWithTimestamps(voiceId, {
-     text,
-     modelId:      eleven_multilingual_v2,   // ← ELEVENLABS_TTS_MODEL
-     outputFormat: mp3_44100_128,            // ← ELEVENLABS_OUTPUT_FORMAT
-     voiceSettings: { stability, similarityBoost, style,
-                      useSpeakerBoost, speed }   // per-agent personality
-   })
+   SentenceChunker (softMax: 80, hardMax: 200)
+     onChunk(sentence) → enqueue into dispatcher queue
         │
-        ▼  Content-Type: application/x-ndjson, X-Cache: MISS, no-store
-   for await (chunk of stream):                  // tee pattern
-     line = JSON.stringify({ audioBase64, alignment }) + '\n'
-     chunks.push(line)        ← accumulate for cache write
-     res.write(line)          ← stream to client (no buffering)
+        ▼  Serial TTS dispatcher (single producer/consumer)
+   while queue:
+     sentence = await dequeue()
+     emitCacheable({ type: 'chunk_meta', seq, chunkText: sentence })
+     for await (elChunk of textToSpeech.streamWithTimestamps(voiceId, {
+       text: sentence,
+       previousText: previousText || undefined,   // ← prosody continuity
+       modelId: eleven_multilingual_v2,
+       outputFormat: mp3_44100_128,
+       voiceSettings: VOICE_MAP[agent].voiceSettings
+     })):
+       emitCacheable({ type: 'audio', seq, audioBase64, alignment })
+     previousText = sentence; seq++
         │
-        ├─ req.on('close') → clientGone → break (frees EL stream)
-        │
-        ▼
-   await setCachedTts(cacheKey, chunks.join(''))    ← SYNC, before res.end()
+        ▼  After dispatcher drains, before res.end():
+   if !cachedLlm: await setCachedLlm(llmKey, rawText)
+   await setCachedTtsStream(ttsKey, ndjsonBuffer.join(''))
+   res.write({ type: 'claim_complete', fullText, rebuts, agrees_with })
    res.end()
 ```
 
-**Why the cache write is awaited** (not fire-and-forget): on Vercel serverless, the function instance can be torn down once the response closes. A `setCachedTts(...).catch(...)` after `res.end()` would silently never persist on cold-spawn workloads. The client has already buffered every byte by this point, so the extra 10 to 30ms is invisible.
+**Why the chunker.** ElevenLabs `streamWithTimestamps` needs a complete chunk for prosody planning. Feeding it tokens one at a time produces robotic per-word delivery; feeding it the entire claim defeats the streaming. Sentence boundaries work well: the LLM is usually still writing sentence N+1 by the time sentence N's audio finishes generating, so end-to-end latency is bounded by the *first* sentence, not the full claim.
 
-**Per-agent `voiceSettings`** are baked into a `VOICE_MAP` so Advocate, Critic, and Wildcard get distinct deliveries (e.g. the Critic is more stable and less expressive, the Wildcard is the most "stylized"). Voice IDs come from your ElevenLabs library via `VOICE_ID_*` env vars.
+**`previousText` for prosody continuity.** ElevenLabs accepts a `previousText` parameter so the model can match cadence and intonation across chunks. Without it, every sentence would start cold and the debate would sound spliced. With it, multi-sentence claims sound like one continuous take.
 
-**Model choice: `eleven_multilingual_v2`.** Picked over the faster `eleven_flash_v2_5` (the code fallback in `api/tts.js`) because it captures emotion and tone better. The debate sounds like three people arguing rather than three TTS voices reading. The trade-off is slightly higher TTFB, which streaming and warmup priming hide most of.
+**`chunk_meta` ↔ `audio` interleaving.** Each `chunk_meta` event signals "the alignment time origin has reset to zero for this chunk's audio." The client tracks `lastEndAbsolute` and shifts `timeOffset` on every `chunk_meta` so word timings stitch into one continuous karaoke timeline.
+
+**`claim_complete` is never cached.** The cacheable NDJSON buffer holds only `chunk_meta` and `audio` events. `claim_complete` is appended fresh on every response (live or replay) so the cached blob can be reused verbatim.
+
+**Why cache writes are awaited** (not fire-and-forget): on Vercel serverless, the function instance can be torn down once the response closes. A `set...Cache(...).catch(...)` after `res.end()` would silently never persist on cold-spawn workloads. The client has already buffered every byte by this point, so the extra latency is invisible.
+
+### Server: `api/tts.js` (legacy / verdict path)
+
+iOS Safari has no `MediaSource` API and can't play streamed MP3 chunks. The original single-shot endpoint stays in place for those clients and for the verdict (which is short enough that streaming buys nothing). It returns one big NDJSON blob: each line carries `{ audioBase64, alignment }`. Same cache shape, separate cache namespace.
+
+**Per-agent `voiceSettings`** are baked into a `VOICE_MAP` (in `api/_tts.js`) so Advocate, Critic, and Wildcard get distinct deliveries. The Critic is more stable and less expressive, the Wildcard is the most "stylized." Voice IDs come from your ElevenLabs library via `VOICE_ID_*` env vars.
+
+**Model choice: `eleven_multilingual_v2`.** Picked over the faster `eleven_flash_v2_5` (the code fallback) because it captures emotion and tone better. The debate sounds like three people arguing rather than three TTS voices reading. The trade-off is slightly higher TTFB, which the sentence chunker and warmup priming hide most of.
 
 **Output format: `mp3_44100_128`.** Podcast-grade quality vs the older default `mp3_22050_32`, which sounded thin on desktop speakers. **Heads up:** 128 kbps requires ElevenLabs Creator tier or above. On Free/Starter the request 4xx's and the client's `audioDisabled` kill switch falls back to silent debate.
 
@@ -150,48 +201,64 @@ The voice layer is worth a closer look. Two things shape the design: the respons
 
 ### Client: `src/lib/audio.js`
 
-The body is NDJSON, not raw MP3. The client demuxes: `audioBase64` bytes feed MediaSource, and `alignment` data feeds the karaoke pipeline.
+Two entry points share the file:
 
 ```
-playAudioStream(text, { agent, signal, getMuted, fresh,
-                        onPlaybackStart/End, onWords })
-  │
-  ├─ fetch('/api/tts' + (fresh ? '?fresh=1' : ''), { signal, body: { agent, text } })
-  │      → ReadableStream of NDJSON lines
-  │
-  ├─ for await (obj of parseNdjson(body)):
-  │       if obj.audioBase64:
-  │            bytes = atob(obj.audioBase64) → Uint8Array
-  │            sourceBuffer.appendBuffer(bytes)   ← MSE path
-  │            if first chunk → audio.play()      ← TTFB-bounded
-  │       if obj.alignment:
-  │            push characters/start/end into running buffers
-  │            onWords(charactersToWords(...))    ← karaoke callback
-  │
-  └─ resolves on: onended | onerror | signal abort | 60s timeout
+startClaimStream(responsePromise, opts)    ← MSE-capable (debate claims)
+playAudioStream(text, opts)                ← legacy (verdict + iOS)
+hasMSE()                                   ← capability check
 ```
 
-**Blob fallback.** For browsers without MSE or MP3 support: buffer all `audioBase64` chunks, then `new Audio(blob)`. Same `onWords` contract.
+For the streaming path, the orchestrator hands `startClaimStream` an in-flight `fetch` and a `gateBeforePlay` promise. The function returns `{ claim, playback }` immediately:
 
-**Karaoke pipeline.** ElevenLabs returns character-level start and end timestamps per chunk. `charactersToWords()` groups them on whitespace boundaries into `{ word, start, end }` records, accumulated across chunks. Each delta fires `onWords(words)`. The `Transcript` component polls `getCurrentPlaybackTime()` on `requestAnimationFrame` and matches the current `audio.currentTime` against word boundaries to drive the highlight. The audio loop never re-renders.
+```
+startClaimStream(fetchPromise, { agent, signal, getMuted, gateBeforePlay,
+                                 onPlaybackStart, onPlaybackEnd, onWords })
+  │
+  ├─ response = await fetchPromise
+  │
+  ├─ MediaSource + new Audio(); audio.src = blob URL
+  │
+  ├─ for await (obj of parseNdjson(response.body)):
+  │       if obj.type === 'chunk_meta':
+  │            timeOffset = lastEndAbsolute  (resets per chunk)
+  │       if obj.type === 'audio':
+  │            sourceBuffer.appendBuffer(decoded bytes)
+  │            push alignment into running word buffer
+  │            if not started:
+  │                 await gateBeforePlay   ← serialize playback
+  │                 audio.play(); started = true
+  │            onWords(...words)
+  │       if obj.type === 'claim_complete':
+  │            settleClaim({ fullText, rebuts, agrees_with })
+  │
+  └─ resolves: claim on claim_complete, playback on audio.ended
+```
+
+**`gateBeforePlay` keeps playback serial.** Claim N+1's stream can buffer bytes into its own `sourceBuffer` while claim N's audio is still playing, but it won't call `audio.play()` until N's playback promise resolves. Only one stream owns the module-level `currentAudio` / `currentResolve` singletons at any moment. Transitions stay instant and voices never overlap.
+
+**Cumulative alignment offset.** Each ElevenLabs chunk's `characterStartTimesSeconds` restart at zero. The client tracks `lastEndAbsolute` per audio frame and bumps `timeOffset` on every `chunk_meta`. Word timings are emitted in absolute seconds so the Transcript component's `requestAnimationFrame` poll against `audio.currentTime` lines up cleanly across chunks.
+
+**Legacy `playAudioStream`.** Same NDJSON shape, no `chunk_meta` events (single chunk), no gate plumbing. Used by the verdict and by iOS Safari's full debate flow.
 
 ### Orchestration & Lifecycle (`src/lib/debate.js`, `src/App.jsx`)
 
-- **Two-path orchestrator.** `runDebate()` always checks the debate-text cache first. Hits trigger `replayCached()`, which dispatches the same callback sequence the live path would, so the UI doesn't know which it's watching. Misses run the live loop and write to cache on clean completion only.
-- **Pipelined live path.** Each agent's LLM call is **pre-fetched while the previous agent's TTS is playing**, so `pendingLlm` runs in parallel with `pendingTts`. The "thinking" indicator stays gated on audio transitions, so the pre-fetch is invisible: when audio ends, the next claim is usually already there. The same pre-fetch applies across rounds and to the final verdict (kicked off during the last wildcard's TTS).
-- **Serialization.** `audio.js` uses module-level singletons (`currentAudio`, `currentResolve`). The orchestrator awaits each `playAudioStream()` before issuing the next; a concurrent caller would orphan the previous promise. (Pipelining doesn't violate this: only the LLM calls overlap with TTS, never two TTS streams.)
+- **Three-path orchestrator.** `runDebate()` always checks the debate-text cache first. Hits trigger `replayCached()`. Misses route through `hasMSE()`: MSE-capable browsers run `liveGenStreaming()`, others run `liveGenLegacy()`. The verdict TTS always uses the legacy path so it works identically on iOS and desktop.
+- **Streaming pipeline.** For each claim, `startClaim()` opens `/api/debate-stream` immediately, passing the *previous* claim's `playback` promise as `gateBeforePlay`. Claim N+1's network call, LLM streaming, TTS chunking, and byte buffering all happen while claim N's audio is still playing. Only the final `audio.play()` waits on the gate.
+- **Legacy pipeline.** For each claim, `callAgent` (LLM) runs in parallel with the previous claim's TTS via `pendingLlm` / `pendingTts`. Same idea as streaming, but pipelined at the LLM-call level instead of the network-stream level.
+- **Serialization.** `audio.js` uses module-level singletons (`currentAudio`, `currentResolve`). Both paths await each playback before starting the next visible play call; concurrent callers would orphan the previous promise. Pipelining doesn't violate this: LLM or network setup overlaps with audio, but only one audio element plays at a time.
 - **Verdict karaoke.** The verdict TTS uses a synthetic `__verdict__` claim ID so per-word alignment data flows through the same `onSpeakingWords` → `claimWords` → `KaraokeText` pipeline as regular claims. The transcript shows a "is reading debate verdict" indicator plus the full verdict text karaoke-highlighted as the wildcard speaks.
 - **Priming.** On topic submit, `TopicInput` fires two warmups:
   - `primeAudio()` plays a silent MP3 inside the click handler so the browser's autoplay policy is unlocked for the rest of the session.
-  - `primeTTS()` sends a fire-and-forget **HEAD** request to `/api/tts` (which returns 204). This pre-warms DNS/TCP/TLS and the cold-start function instance **without** triggering an ElevenLabs generation. (An earlier version POSTed a `.` and billed an EL call per debate start; HEAD removed that cost.)
+  - `primeTTS()` sends a fire-and-forget **HEAD** request to `/api/tts` (the handler short-circuits with a 204). This pre-warms DNS/TCP/TLS and the cold-start function instance **without** triggering an ElevenLabs generation. (An earlier version POSTed a `.` and billed an EL call per debate start; HEAD removed that cost.)
 - **Mute and abort.** The header mute button flips `mutedRef`, and `audio.js` checks `getMuted()` between chunks and pauses immediately. "Stop" and "New Debate" call the orchestrator's cancel function, which `AbortController.abort()`s every in-flight `fetch` and pauses any live `<audio>` element.
 - **Per-turn timeout.** `TURN_TIMEOUT_MS = 60_000` is a safety net. If `onended`, `onerror`, or abort never fire, the orchestrator unblocks anyway after 60s.
-- **Soft-fail.** On fetch, play, or appendBuffer failure, `audioDisabled` is set for the rest of the session and the debate continues silently.
-- **`?fresh=1`** on the page URL flows from `App.jsx` through every cache layer (debate text plus per-utterance TTS) for hands-on cache refreshing.
+- **Soft-fail.** On fetch, play, or appendBuffer failure, `audioDisabled` is set for the rest of the session and the debate continues silently. If the streaming endpoint fails partway, the orchestrator skips that agent's contribution and continues pipelining so a single blip doesn't kill the whole debate.
+- **`?fresh=1`** on the page URL bypasses the debate-text cache (`/api/debate-cache`) and the legacy TTS cache (`/api/tts`). The streaming endpoint (`/api/debate-stream`) does not currently honor `?fresh=1`, so refreshing per-claim LLM or streaming-TTS entries requires deleting them in Redis directly.
 
 ## Caching
 
-Three independent layers, all Upstash Redis, all content-addressed via the shared `makeCacheStore` factory in `api/_shared.js`, all with `?fresh=1` bypass on the read path. **Keys do the invalidation work; TTL is just a storage backstop.** Any input change produces a new key, so the 30-day defaults can stay long without serving stale content.
+Four content-addressed namespaces, all Upstash Redis, all built on the shared `makeCacheStore` factory in `api/_shared.js`, all with `?fresh=1` bypass on the read path. **Keys do the invalidation work; TTL is just a storage backstop.** Any input change produces a new key, so the 30-day defaults can stay long without serving stale content.
 
 ### Layer 1: Debate text (`/api/debate-cache`)
 
@@ -207,19 +274,26 @@ POST /api/debate-cache  { topic, mode, claims, verdict }   → { stored: true }
 - **Topic normalization**: `topic.trim().toLowerCase()` in the key so "Pineapple belongs on pizza" and "  pineapple belongs on pizza " hit the same entry.
 - **`?fresh=1` proactively deletes** the existing entry so an aborted regen doesn't leave the stale one behind.
 
-### Layer 2: LLM responses (in `callAnthropic` / `callOpenAI` / `callGoogle`)
+### Layer 2: LLM responses (`llmCacheKey` in `api/_shared.js`)
 
-- **Key**: `sha256(JSON.stringify({ behavior, provider, model, maxTokens, systemPrompt, userMessage }))`. Identical inputs produce a cache hit and skip the LLM call entirely.
-- **Value**: the raw response text the provider returned.
+- **Key**: `sha256(JSON.stringify({ behavior, provider, model, maxTokens, systemPrompt, userMessage }))`. Identical inputs produce a cache hit and skip the LLM call entirely. Shared across the streaming path (`/api/debate-stream`) and the legacy path (`/api/debate`) so the same prompt cached on one path is reused by the other.
+- **Value**: the raw response text the provider returned (prose-first `TEXT/META` envelope on current entries, JSON on legacy).
 - **TTL**: `CACHE_TTL_SECONDS` (default 30d).
 - **Why this matters**: aborted debates retain their per-claim text, so partial work isn't wasted. The Layer 1 (full-debate) cache only writes on clean completion; Layer 2 catches every individual successful LLM call.
-- **Coverage**: applied across all three providers and the verdict path. `BEHAVIOR_HASH` is folded into every key so any prompt or sampling-setting edit invalidates symmetrically.
 
-### Layer 3: TTS audio (in `/api/tts`)
+### Layer 3a: Legacy TTS audio (`ttsCacheKey`, used by `/api/tts`)
 
 - **Key**: `sha256(model | voice | format | voice_settings_json | text)`. Voice settings (stability, style, speed) are in the key so tweaks to `VOICE_MAP` auto-invalidate without manual cache wipes.
-- **Value**: the full NDJSON body (audio plus alignment), so the karaoke pipeline replays identically from cache as from a live EL stream.
+- **Value**: the full single-shot NDJSON body, so the karaoke pipeline replays identically from cache as from a live EL stream.
 - **TTL**: `TTS_CACHE_TTL_SECONDS` (default 2,592,000 = 30d).
+- Powers verdict audio and iOS Safari debate audio.
+
+### Layer 3b: Streaming TTS (`ttsStreamCacheKey`, used by `/api/debate-stream`)
+
+- **Key**: same shape as Layer 3a but namespaced separately. The cached value is the *multi-chunk* NDJSON blob (`chunk_meta` + `audio` events), so cumulative alignment offsets stay correct on replay.
+- **Value**: the assembled NDJSON stream, sans the final `claim_complete` event (that's appended fresh on every replay).
+- **TTL**: `TTS_CACHE_TTL_SECONDS` (default 30d).
+- **Replay shape**: on cache hit, the server writes the cached blob byte-for-byte then appends a fresh `claim_complete` event built from the cached LLM response's parsed meta trailer.
 - **Cache hits skip the char budget.** Replays cost the user nothing and don't consume EL quota.
 - **`?fresh=1`** on the request URL proactively deletes the entry (mirrors Layer 1) so an aborted regen doesn't leave the stale one behind.
 
@@ -227,11 +301,11 @@ POST /api/debate-cache  { topic, mode, claims, verdict }   → { stored: true }
 
 ```bash
 node scripts/cache-status.js              # read-only inspection: count + sample of each layer
-node scripts/wipe-cache.js --dry-run      # list keys that would be deleted (all three layers)
+node scripts/wipe-cache.js --dry-run      # list keys that would be deleted
 node scripts/wipe-cache.js                # actually delete them (rate-limit counters preserved)
 ```
 
-Both share `scripts/_redis.js` (env loader, client, `scanAll`, and `CACHE_PATTERNS`).
+Both share `scripts/_redis.js` (env loader, client, `scanAll`, and `CACHE_PATTERNS`). `CACHE_PATTERNS` currently covers `debate:cache:*`, `llm:cache:*`, and `tts:cache:*`; the newer `ttsstream:cache:*` namespace (Layer 3b) is not yet listed there, so streaming-TTS entries don't get swept by these scripts. Wipe Redis directly or extend the patterns if you need to clear it.
 
 ### Storage wrapper note
 
@@ -242,9 +316,9 @@ The cache factory's `wrap` and `unwrap` indirection exists because Upstash's RES
 | Path | Purpose |
 |------|---------|
 | `src/App.jsx` | Main app: state, layout, callback wiring, `?fresh=1` plumbing |
-| `src/lib/agents.js` | Agent config (name/model/color/prefix), response parsers |
-| `src/lib/debate.js` | Async debate orchestrator: cache-check, live loop, replay path, TTS serialization |
-| `src/lib/audio.js` | TTS client: NDJSON demux, MSE streaming, karaoke alignment, priming, mute, timeout |
+| `src/lib/agents.js` | Agent config (name/model/color/prefix). Parser for both `TEXT/META` prose-trailer and legacy JSON response formats |
+| `src/lib/debate.js` | Async orchestrator. `hasMSE()` capability branch + `replayCached` / `liveGenStreaming` / `liveGenLegacy` / verdict |
+| `src/lib/audio.js` | `startClaimStream` (streaming, gated playback for pipelining, cumulative alignment offset), `playAudioStream` (legacy single-shot, used by verdict + iOS), `hasMSE`, mute, timeout |
 | `src/lib/graphUtils.js` | Graph data builder, Wildcard-only edge filtering, scoring logic |
 | `src/lib/useMediaQuery.js` | `useMediaQuery` and `useIsMobile` (≤720px) for responsive layout |
 | `src/components/DebateGraph.jsx` | D3 force-directed SVG graph (800×700, fixed agent anchors: Advocate top-center, Critic bottom-left, Wildcard bottom-right) |
@@ -255,15 +329,19 @@ The cache factory's `wrap` and `unwrap` indirection exists because Upstash's RES
 | `src/components/ThinkingIndicator.jsx` | Agent thinking animation |
 | `src/components/RoundToasts.jsx` | Round winner notifications |
 | `src/styles/theme.css` | Dark theme CSS variables |
-| `api/debate.js` | Debate endpoint: routes agent to provider, builds system prompts |
-| `api/verdict.js` | Verdict endpoint: Wildcard final judgment |
-| `api/tts.js` | TTS endpoint: cache-check, NDJSON stream + tee, sync cache-write |
+| `api/debate-stream.js` | Per-claim streaming endpoint. LLM SSE → state machine → sentence chunker → serial EL `streamWithTimestamps` with `previousText` → NDJSON (`chunk_meta` / `audio` / `claim_complete` / `error`). Two cache namespaces: shared LLM + isolated TTS-stream |
+| `api/debate.js` | Legacy non-streaming claim endpoint (iOS Safari + fallback). Returns one claim's structured response |
+| `api/tts.js` | Legacy non-streaming TTS endpoint. Used by `/api/verdict` audio and iOS Safari claim audio. NDJSON stream + tee, sync cache-write |
+| `api/verdict.js` | Wildcard final judgement, always non-streaming (~150 tokens) |
 | `api/debate-cache.js` | Debate text cache: GET (lookup), POST (validated write), `?fresh=1` proactive delete |
-| `api/_shared.js` | LLM clients (per-call cached), origin check, validation, KV rate-limit + TTS-budget + `makeCacheStore` factory |
-| `api/_prompts.js` | All system prompts, mode styles, sampling settings + `BEHAVIOR_HASH` content fingerprint |
+| `api/_shared.js` | Provider LLM clients (`callX` + `streamX`), origin check, validation, KV rate-limit + TTS-budget + cache factory (LLM, legacy TTS, streaming TTS, debate text) |
+| `api/_prompts.js` | All system prompts (`advocateTemplate`, `criticTemplate`, `wildcardTemplate`), mode styles, sampling settings + `BEHAVIOR_HASH` content fingerprint |
+| `api/_chunker.js` | `SentenceChunker` (softMax 80, hardMax 200): splits an incoming token stream on sentence boundaries, fires `onChunk` per sentence |
+| `api/_streaming.js` | TEXT/META state machine (`createStateMachine`) for parsing the prose-trailer format off a token stream + `parseMetaTrailer` + `extractFromRawLlm` (for cache replay) |
+| `api/_tts.js` | ElevenLabs client singleton, `MODEL_ID`, `OUTPUT_FORMAT`, `VOICE_MAP` (per-agent voice settings), `getVoiceId` |
 | `scripts/_redis.js` | Shared Upstash client + `scanAll` + `CACHE_PATTERNS` for maintenance scripts |
-| `scripts/cache-status.js` | Read-only inspection of the three cache layers |
-| `scripts/wipe-cache.js` | Delete all entries in the three cache namespaces (preserves rate-limit counters) |
+| `scripts/cache-status.js` | Read-only inspection of the four cache layers |
+| `scripts/wipe-cache.js` | Delete all entries in the four cache namespaces (preserves rate-limit counters) |
 | `scripts/generate-contours.ts` | Pre-build art generator: FBM-noise topographic contour SVG (run via `npm run contours`) |
 
 ## Getting Started
@@ -273,7 +351,7 @@ The cache factory's `wrap` and `unwrap` indirection exists because Upstash's RES
 - Node.js 20+ (Vercel's current LTS default; Node 18 is deprecated).
 - Vercel CLI (`npm i -g vercel`), needed for local dev so `/api/*` and the Vite frontend share an origin.
 - API keys: Anthropic, OpenAI, Google, ElevenLabs.
-- An Upstash Redis instance (provisioned via the Vercel Marketplace, or any Upstash account). Optional but recommended. Without it, rate limits, TTS budgets, and both cache layers all fail open and provider spend caps become your only backstop.
+- An Upstash Redis instance (provisioned via the Vercel Marketplace, or any Upstash account). Optional but recommended. Without it, rate limits, TTS budgets, and all four cache layers all fail open and provider spend caps become your only backstop.
 
 ### Installation
 
@@ -327,7 +405,7 @@ TTS_CHARS_GLOBAL_DAILY=200000   # global daily char ceiling
 # ── Cache TTLs (optional) ────────────────────────────
 # Keys do invalidation work; TTL is just a storage floor.
 CACHE_TTL_SECONDS=2592000       # debate text + LLM response cache (30d)
-TTS_CACHE_TTL_SECONDS=2592000   # TTS audio cache (30d)
+TTS_CACHE_TTL_SECONDS=2592000   # TTS audio cache (legacy + streaming, 30d)
 ```
 
 ### Development
@@ -375,7 +453,9 @@ All limits live in Upstash Redis so they're shared across serverless invocations
 
 The cooldown is implemented as `SET NX EX` on `rl:cd:<ip>`. Only the *first* call of a new debate (round 1, advocate) acquires it; subsequent agent calls within the same debate skip the lock. Daily counters auto-expire 25h after creation so a slow day rolls over.
 
-**Cache hits sidestep most limits.** A replayed debate makes zero LLM calls (no `/api/debate` invocations, so no daily-debate counter bump), and TTS audio served from cache skips the per-IP char budget. The cooldown still applies on the entry call to `/api/debate` if a live regen happens, but the GET on `/api/debate-cache` is unrestricted.
+**Cache hits sidestep most limits.** A replayed debate makes zero LLM calls (no `/api/debate-stream` or `/api/debate` invocations, so no daily-debate counter bump), and cached legacy TTS audio skips the per-IP char budget. The cooldown still applies on the entry call if a live regen happens, but the GET on `/api/debate-cache` is unrestricted.
+
+**TTS char budgets only apply on the legacy path.** `TTS_MAX_CHARS_PER_REQUEST`, `TTS_CHARS_IP_DAILY`, and `TTS_CHARS_GLOBAL_DAILY` are enforced inside `/api/tts` (the legacy + verdict path). `/api/debate-stream` does not count TTS characters today: a regen on MSE-capable clients consumes ElevenLabs quota without that cap. Use provider-side spend caps as the real cost backstop.
 
 The frontend also prevents parallel debates structurally: while `status !== 'idle'`, the `TopicInput` view is unmounted entirely, so there's no Start button to click. Returning to it requires clicking **New Debate** in the header, which resets state.
 
@@ -396,9 +476,9 @@ The API includes several hardening measures:
 
 - **Frontend:** React 19, Vite 8, D3 (force, selection, zoom, drag, transition), Lucide icons. `useMediaQuery` hook for responsive layout.
 - **Backend:** Vercel Serverless Functions (Node.js).
-- **LLM Providers:** Anthropic (Claude, default reasoning), OpenAI (GPT, `reasoning_effort: low`), Google (Gemini, `thinkingLevel: low`).
-- **TTS:** ElevenLabs (`@elevenlabs/elevenlabs-js`), `streamWithTimestamps` over NDJSON. MP3 chunks fed to MediaSource on the client, word-level alignment drives karaoke.
-- **Storage / Cache:** Upstash Redis (Vercel Marketplace), powering rate limits, TTS char budgets, and a three-layer content-addressed cache (debate text + per-call LLM + TTS audio, all 30d, all fingerprinted by `BEHAVIOR_HASH`).
+- **LLM Providers:** Anthropic (Claude, default reasoning), OpenAI (GPT, `reasoning_effort: low`), Google (Gemini, `thinkingLevel: low`). Each provider has both non-streaming (`callX`) and SSE-streaming (`streamX`) clients in `api/_shared.js`.
+- **TTS:** ElevenLabs (`@elevenlabs/elevenlabs-js`), `streamWithTimestamps` over NDJSON. Streaming path uses sentence-chunked calls with `previousText` for prosody continuity. MP3 chunks fed to MediaSource on the client, word-level alignment drives karaoke with a cumulative time offset.
+- **Storage / Cache:** Upstash Redis (Vercel Marketplace), powering rate limits, TTS char budgets, and a four-namespace content-addressed cache (debate text + per-call LLM + legacy TTS + streaming TTS, all 30d, all fingerprinted by `BEHAVIOR_HASH`).
 - **Build assets:** topographic contour SVG generated at design time by `scripts/generate-contours.ts` (FBM noise + marching squares).
 - **Styling:** CSS custom properties, dark theme, no CSS framework.
 - **No TypeScript (except the build-time script), no state management library, no database.**

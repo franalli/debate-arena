@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "contours": "npx tsx scripts/generate-contours.ts"
+    "contours": "npx tsx scripts/generate-contours.ts",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.47.0",

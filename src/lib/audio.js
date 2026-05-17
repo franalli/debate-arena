@@ -40,6 +40,14 @@ export function primeTTS() {
   fetch('/api/tts', { method: 'HEAD' }).catch(() => {})
 }
 
+// Same idea for /api/debate-stream — the round-1-advocate POST that
+// kicks off a fresh debate pays cold-start cost on the first hit; a
+// preceding HEAD warms the function instance so the user-visible POST
+// can reuse the TCP/TLS connection. Saves ~100-300ms on cold paths.
+export function primeStream() {
+  fetch('/api/debate-stream', { method: 'HEAD' }).catch(() => {})
+}
+
 export function resetAudio() {
   audioDisabled = false
   stopAudio()
@@ -98,6 +106,228 @@ export async function playAudioStream(text, opts) {
   }
 }
 
+// Consume the new /api/debate-stream NDJSON envelope (chunk_meta / audio
+// / claim_complete / error). Event-type strings mirror those emitted by
+// api/debate-stream.js — keep them in sync. Returns { claim, playback }:
+//   - claim:    Promise resolving to { fullText, rebuts, agrees_with }
+//               as soon as the claim_complete event arrives. Null on
+//               truncation, abort, or pre-completion error.
+//   - playback: Promise resolving when audio playback ends (or aborts).
+//
+// Pipelining: pass `opts.gateBeforePlay` (a Promise) to defer audio
+// playback until that promise resolves. The MSE source buffer still
+// accumulates events during the wait, so when the gate opens playback
+// starts immediately from the buffered audio. The orchestrator uses
+// this to overlap claim N+1's network request + EL streaming with
+// claim N's audio playback while keeping audio strictly serial.
+//
+// MSE-only. iOS Safari (no MediaSource) should NOT call this — the
+// orchestrator must route it to playAudioStream + legacy endpoints.
+export function startClaimStream(responsePromise, opts) {
+  const {
+    agent, signal, getMuted, gateBeforePlay,
+    onPlaybackStart, onPlaybackEnd, onWords, onChunkText
+  } = opts
+
+  let claimResolve
+  const claimPromise = new Promise(r => { claimResolve = r })
+  let playbackResolve
+  const playbackPromise = new Promise(r => { playbackResolve = r })
+
+  const settleClaim = (data) => { if (claimResolve) { claimResolve(data); claimResolve = null } }
+  const settlePlayback = () => { if (playbackResolve) { playbackResolve(); playbackResolve = null } }
+
+  ;(async () => {
+    if (audioDisabled || getMuted?.() || signal?.aborted) {
+      settleClaim(null); settlePlayback(); return
+    }
+
+    let response
+    try {
+      response = await responsePromise
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('[audio] stream fetch failed:', err.message)
+        audioDisabled = true
+      }
+      settleClaim(null); settlePlayback(); return
+    }
+    if (!response.ok) {
+      console.error('[audio] debate-stream endpoint returned', response.status)
+      audioDisabled = true
+      settleClaim(null); settlePlayback(); return
+    }
+
+    const fireEnd = makeEndFirer(onPlaybackEnd, agent)
+    const mediaSource = new MediaSource()
+    const audio = new Audio()
+    audio.src = URL.createObjectURL(mediaSource)
+    const pushAlignment = makeAlignmentSink(onWords)
+
+    // Time-offset bookkeeping: each EL chunk's character timestamps
+    // restart at 0. Cumulative offset = sum of prior chunks' last end
+    // times. Updated when a new chunk_meta arrives; applied to every
+    // audio event's alignment.
+    let timeOffset = 0
+    let lastEndAbsolute = 0
+    let currentSeq = -1
+
+    let started = false
+    let playbackEndedPromise = null
+
+    // Accumulated prose text from chunk_meta events. We surface this to
+    // the orchestrator via onChunkText so the transcript can render the
+    // claim's text BEFORE claim_complete arrives (which is the last
+    // server event — for un-pipelined claims it lands well after audio
+    // has already started). To avoid showing the new claim's text while
+    // a prior claim's audio is still playing, we buffer chunk_meta
+    // events until audio.play() resolves (which for gated claims is
+    // when the prior audio ends).
+    let accumulatedChunkText = ''
+
+    try {
+      await new Promise((resolve) => {
+        mediaSource.addEventListener('sourceopen', resolve, { once: true })
+      })
+
+      const sourceBuffer = mediaSource.addSourceBuffer(MIME)
+
+      for await (const obj of parseNdjson(response.body)) {
+        if (signal?.aborted) break
+        if (getMuted?.()) {
+          try { audio.pause() } catch { /* ignore */ }
+          break
+        }
+
+        if (obj.type === 'chunk_meta') {
+          // New chunk: shift the alignment time origin to the end of
+          // the prior chunk. seq=0's offset stays 0 (first chunk has
+          // no predecessor).
+          if (obj.seq !== currentSeq) {
+            currentSeq = obj.seq
+            if (obj.seq > 0) timeOffset = lastEndAbsolute
+          }
+          // Accumulate prose for the transcript. Surface immediately if
+          // audio is already playing; otherwise buffer until audio.play()
+          // resolves (so a pipelined claim's text doesn't appear while
+          // the prior claim is still speaking).
+          if (obj.chunkText) {
+            accumulatedChunkText = accumulatedChunkText
+              ? `${accumulatedChunkText} ${obj.chunkText}`
+              : obj.chunkText
+            if (started) onChunkText?.(accumulatedChunkText)
+          }
+          continue
+        }
+
+        if (obj.type === 'audio') {
+          if (obj.audioBase64) {
+            const bytes = base64ToBytes(obj.audioBase64)
+            try {
+              await safeAppend(sourceBuffer, bytes)
+            } catch (err) {
+              console.error('[audio] appendBuffer failed:', err.message)
+              audioDisabled = true
+              break
+            }
+
+            // Start playback once the gate opens (or immediately if
+            // unset — the first claim of a debate). The gate-deferred
+            // assignment of currentAudio + setupPlaybackPromise is the
+            // load-bearing invariant of the pipelined pipeline: at most
+            // ONE stream touches the module-level currentAudio /
+            // currentResolve singletons at a time. The next claim's
+            // stream may already be buffering bytes into its own
+            // sourceBuffer, but until its gate opens it leaves the
+            // singletons alone.
+            //
+            // gateBeforePlay is always either null or a playback Promise
+            // from a prior startClaimStream — those only resolve, never
+            // reject. The outer catch still handles propagation if that
+            // ever changes.
+            if (!started) {
+              if (gateBeforePlay) await gateBeforePlay
+              // Abort may have fired while we were waiting on the gate.
+              if (signal?.aborted || getMuted?.()) break
+              currentAudio = audio
+              playbackEndedPromise = setupPlaybackPromise(audio, signal)
+              try {
+                await audio.play()
+                started = true
+                onPlaybackStart?.(agent)
+                // Flush any chunk_meta text buffered during the gate
+                // wait — surface NOW so the transcript renders this
+                // claim's text right as its own audio begins.
+                if (accumulatedChunkText) onChunkText?.(accumulatedChunkText)
+              } catch (err) {
+                console.error('[audio] play() rejected:', err.message)
+                audioDisabled = true
+                break
+              }
+            }
+          }
+
+          if (obj.alignment) {
+            const ends = obj.alignment.characterEndTimesSeconds
+            if (Array.isArray(ends) && ends.length > 0) {
+              lastEndAbsolute = timeOffset + ends[ends.length - 1]
+            }
+            pushAlignment(obj.alignment, timeOffset)
+          }
+          continue
+        }
+
+        if (obj.type === 'claim_complete') {
+          settleClaim({
+            fullText: obj.fullText || '',
+            rebuts: obj.rebuts || null,
+            agrees_with: obj.agrees_with || null
+          })
+          continue
+        }
+
+        if (obj.type === 'error') {
+          console.error('[audio] stream error event:', obj.message)
+          break
+        }
+      }
+
+      if (mediaSource.readyState === 'open') {
+        try {
+          await waitUntilIdle(sourceBuffer)
+          mediaSource.endOfStream()
+        } catch (err) {
+          console.warn('[audio] endOfStream failed:', err.message)
+        }
+      }
+
+      // If claim_complete never arrived (truncation, abort, error event),
+      // null it so the orchestrator knows to skip this claim.
+      settleClaim(null)
+
+      // If we never started (gate never opened, no audio events, or
+      // muted/aborted before play), playbackEndedPromise is null —
+      // skip the wait and let finally settle our own playbackPromise.
+      if (started && playbackEndedPromise) {
+        await playbackEndedPromise
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('[audio] startClaimStream error:', err.message)
+        audioDisabled = true
+      }
+    } finally {
+      fireEnd()
+      try { URL.revokeObjectURL(audio.src) } catch { /* ignore */ }
+      if (currentAudio === audio) currentAudio = null
+      settleClaim(null)
+      settlePlayback()
+    }
+  })()
+
+  return { claim: claimPromise, playback: playbackPromise }
+}
+
 // ── Internal helpers ───────────────────────────────────────
 
 function makeEndFirer(onPlaybackEnd, agent) {
@@ -111,19 +341,34 @@ function makeEndFirer(onPlaybackEnd, agent) {
 
 // Accumulates per-chunk character alignment into cumulative word timings,
 // emitting via onWords each time new alignment arrives. Returns the
-// per-chunk push function. Same object used by both MSE and Blob paths.
+// per-chunk push function. timeOffset (default 0) is added to every
+// character timestamp before accumulation — needed by playClaimStream
+// where each EL chunk's timestamps restart at 0 within its own NDJSON
+// frame but must be presented as absolute times against the start of
+// the whole claim. The legacy single-shot path passes no offset (one
+// chunk, no shift) and is unaffected.
 function makeAlignmentSink(onWords) {
   const chars = []
   const starts = []
   const ends = []
-  return (alignment) => {
+  return (alignment, timeOffset = 0) => {
     if (!alignment || !onWords) return
     chars.push(...alignment.characters)
-    starts.push(...alignment.characterStartTimesSeconds)
-    ends.push(...alignment.characterEndTimesSeconds)
+    if (timeOffset) {
+      starts.push(...alignment.characterStartTimesSeconds.map(t => t + timeOffset))
+      ends.push(...alignment.characterEndTimesSeconds.map(t => t + timeOffset))
+    } else {
+      starts.push(...alignment.characterStartTimesSeconds)
+      ends.push(...alignment.characterEndTimesSeconds)
+    }
     onWords(charactersToWords(chars, starts, ends))
   }
 }
+
+// Capability check exported so the orchestrator can route MSE-capable
+// clients (desktop / Android) to /api/debate-stream and Blob-fallback
+// clients (iOS Safari) to the legacy /api/debate + /api/tts pipeline.
+export function hasMSE() { return useMSE }
 
 function setupPlaybackPromise(audio, signal) {
   return new Promise((resolve) => {
