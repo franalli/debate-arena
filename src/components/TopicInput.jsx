@@ -68,14 +68,20 @@ function ShimmerButton({ text, onClick, allowWrap = false }) {
   )
 }
 
-export default function TopicInput({ onStart }) {
-  const [topic, setTopic] = useState('')
-  const [mode, setMode] = useState('fast')
+export default function TopicInput({ onStart, initialTopic = '', initialMode = 'fast', cooldownLeft = 0 }) {
+  const [topic, setTopic] = useState(initialTopic)
+  const [mode, setMode] = useState(initialMode)
   const rounds = 3
   const isMobile = useIsMobile()
 
+  // cooldownLeft > 0 means the per-IP debate cooldown is still ticking; the
+  // parent feeds a live count so we can disable Start and show the wait.
+  const coolingDown = cooldownLeft > 0
+  const canStart = topic.trim().length > 0 && !coolingDown
+
   const handleSubmit = (e) => {
     e.preventDefault()
+    if (coolingDown) return
     if (topic.trim()) {
       primeAudio()
       primeTTS()
@@ -163,17 +169,19 @@ export default function TopicInput({ onStart }) {
           />
           <button
             type="submit"
-            disabled={!topic.trim()}
+            disabled={!canStart}
             style={{
               padding: '0.85rem 1.5rem',
-              background: topic.trim() ? 'var(--wildcard)' : 'var(--bg-card)',
-              color: topic.trim() ? '#fff' : 'var(--text-muted)',
+              background: canStart ? 'var(--wildcard)' : 'var(--bg-card)',
+              color: canStart ? '#fff' : 'var(--text-muted)',
               borderRadius: 'var(--radius)',
               fontWeight: 600,
+              whiteSpace: 'nowrap',
+              cursor: canStart ? 'pointer' : 'not-allowed',
               transition: 'all var(--transition)'
             }}
           >
-            Start
+            {coolingDown ? `Wait ${cooldownLeft}s` : 'Start'}
           </button>
         </div>
 

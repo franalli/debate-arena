@@ -33,6 +33,14 @@ export default function App() {
   const [verdictText, setVerdictText] = useState(null)
   const [roundResults, setRoundResults] = useState([])
   const [error, setError] = useState(null)
+  // Per-IP debate cooldown (server-enforced, ~60s). A start rejected with
+  // code:'cooldown' bounces to the topic screen with a live countdown instead
+  // of a hard error. startingRef debounces double-submits (the same-second
+  // 429 pairs seen in prod logs).
+  const [cooldownUntil, setCooldownUntil] = useState(null)
+  const [nowTs, setNowTs] = useState(() => Date.now())
+  const cooldownUntilRef = useRef(null)
+  const startingRef = useRef(false)
   const cancelRef = useRef(null)
   const selectionTimerRef = useRef(null)
   const verdictRef = useRef(null)
@@ -54,7 +62,32 @@ export default function App() {
     setAudioMuted(muted)
   }, [muted])
 
+  // Mirror the cooldown deadline into a ref for a synchronous, stale-closure-
+  // free guard in startDebate. Ref writes in an effect are fine; setState is
+  // not — so the countdown is derived (cooldownLeft below), not effect-driven.
+  useEffect(() => {
+    cooldownUntilRef.current = cooldownUntil
+  }, [cooldownUntil])
+
+  // While a cooldown is active, tick nowTs every half-second so the derived
+  // countdown re-renders, and clear the deadline once it passes. setState lives
+  // in the interval callback (a subscription), never in the effect body.
+  useEffect(() => {
+    if (!cooldownUntil) return
+    const id = setInterval(() => {
+      if (Date.now() >= cooldownUntil) setCooldownUntil(null)
+      else setNowTs(Date.now())
+    }, 500)
+    return () => clearInterval(id)
+  }, [cooldownUntil])
+
   const startDebate = useCallback((debateTopic, selectedMode, options = {}) => {
+    // Debounce re-entrant starts (double-tap / mobile touch+click) and block
+    // any start attempted inside the per-IP cooldown window. Both guards read
+    // refs so this stays correct without widening the useCallback deps.
+    if (startingRef.current) return
+    if (cooldownUntilRef.current && Date.now() < cooldownUntilRef.current) return
+    startingRef.current = true
     const { resumeFrom = null } = options
     if (selectedMode) setMode(selectedMode)
     const activeMode = selectedMode || mode
@@ -83,6 +116,7 @@ export default function App() {
       },
       onAgentComplete: (agentId, round, newClaims) => {
         setThinkingAgent(null)
+        startingRef.current = false
         if (newClaims.length === 0) return
         // Upsert by id. The streaming pipeline calls this multiple times
         // per claim — once with each incremental chunk_meta arrival
@@ -119,6 +153,19 @@ export default function App() {
       },
       onError: (err, agentId, round) => {
         setThinkingAgent(null)
+        startingRef.current = false
+        // Cooldown is a temporary throttle, not a failure: bounce back to the
+        // topic screen with a live countdown (rendered by TopicInput) instead
+        // of a red error banner whose Retry would just 429 again.
+        if (err.code === 'cooldown') {
+          cancelRef.current?.()
+          cancelRef.current = null
+          setNowTs(Date.now())
+          setCooldownUntil(Date.now() + (err.retryAfter || 60) * 1000)
+          setStatus('idle')
+          setError(null)
+          return
+        }
         setError({ message: err.message, code: err.code, retryAfter: err.retryAfter })
         // Terminal errors: auth failures, or any error before debate has claims (e.g. rate limit)
         if (err.message.includes('401') || accumulated.length === 0) {
@@ -170,6 +217,7 @@ export default function App() {
   const handleStop = () => {
     if (cancelRef.current) cancelRef.current()
     cancelRef.current = null
+    startingRef.current = false
     setThinkingAgent(null)
     setSpeakingAgent(null)
     setSpeakingClaimId(null)
@@ -189,6 +237,7 @@ export default function App() {
 
   const handleNewDebate = () => {
     if (cancelRef.current) cancelRef.current()
+    startingRef.current = false
     setStatus('idle')
     setTopic('')
     setAllClaims([])
@@ -233,8 +282,12 @@ export default function App() {
     return { label, color, isComplete }
   }, [allClaims, status])
 
+  // Derived (not effect-driven) so it stays lint-clean and always reflects the
+  // current clock. nowTs ticks via the cooldown interval while one is active.
+  const cooldownLeft = cooldownUntil ? Math.max(0, Math.ceil((cooldownUntil - nowTs) / 1000)) : 0
+
   if (status === 'idle') {
-    return <TopicInput onStart={startDebate} />
+    return <TopicInput onStart={startDebate} initialTopic={topic} initialMode={mode} cooldownLeft={cooldownLeft} />
   }
 
   const scoreEl = liveScore && (
